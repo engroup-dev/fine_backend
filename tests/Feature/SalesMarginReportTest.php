@@ -555,3 +555,48 @@ test('it costs a line from its recorded actual cost, not the lot cost, and does 
         ->and((float) $rowB['cost'])->toEqual(50.0)
         ->and($response['lines_missing_cost'])->toBe(0);
 });
+
+test('discounted sales count their net revenue: line discount plus a share of the invoice discount', function (): void {
+    $order = SalesOrder::create([
+        'operating_unit_id' => $this->unitA->id,
+        'order_number' => 'SO-2026-0099',
+        'client_id' => $this->client->id,
+        'buyer_type' => 'client',
+        'status' => SalesOrderStatus::Open,
+        'fulfillment_status' => SaleFulfillmentStatus::Delivered,
+        'channel' => 'pos',
+    ]);
+    // Money columns are not mass-assignable; checkout sets them explicitly too.
+    $order->forceFill(['invoice_discount' => 30])->save();
+
+    // Item A: 2 × 200 = 400, less a 100 line discount = 300 net.
+    SalesOrderLine::create([
+        'sales_order_id' => $order->id,
+        'inventory_item_id' => $this->itemA->id,
+        'stock_lot_id' => $this->lotA->id,
+        'quantity' => 2,
+        'unit_price' => 200,
+        'discount_amount' => 100,
+        'position' => 1,
+    ]);
+
+    // Item B: 2 × 50 = 100 net. The 30 invoice discount splits 300:100 → 22.5 and 7.5.
+    SalesOrderLine::create([
+        'sales_order_id' => $order->id,
+        'inventory_item_id' => $this->itemB->id,
+        'stock_lot_id' => $this->lotB->id,
+        'quantity' => 2,
+        'unit_price' => 50,
+        'position' => 2,
+    ]);
+
+    $response = ($this->asOwner)()->getJson('/api/v1/reports/sales-margin?group_by=item&company_wide=1')
+        ->assertOk()
+        ->json();
+
+    $rows = collect($response['rows'])->keyBy('key');
+
+    expect((float) $rows[$this->itemA->id]['revenue'])->toBe(277.5)
+        ->and((float) $rows[$this->itemB->id]['revenue'])->toBe(92.5)
+        ->and((float) $response['totals']['revenue'])->toBe(370.0);
+});

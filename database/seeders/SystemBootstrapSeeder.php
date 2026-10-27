@@ -305,9 +305,7 @@ class SystemBootstrapSeeder extends Seeder
 
         $revenueEvents = [
             InventoryEventType::Sales,
-            InventoryEventType::SalesReturns,
             InventoryEventType::EarnedDiscount,
-            InventoryEventType::GrantedDiscount,
             InventoryEventType::SalesCommission,
         ];
 
@@ -337,6 +335,23 @@ class SystemBootstrapSeeder extends Seeder
                     ['operating_unit_id' => $unit->id, 'event_type' => $event->value],
                     ['account_id' => $unit->revenue_account_id],
                 );
+            }
+
+            $revenueCode = Account::whereKey($unit->revenue_account_id)->value('account_code');
+            if ($revenueCode !== null && preg_match('/^4020([1-4])$/', (string) $revenueCode, $matches) === 1) {
+                $suffix = $matches[1];
+                foreach ([
+                    InventoryEventType::SalesReturns->value => '4040'.$suffix,
+                    InventoryEventType::GrantedDiscount->value => '4070'.$suffix,
+                ] as $event => $code) {
+                    $account = Account::where('account_code', $code)->first();
+                    if ($account !== null) {
+                        OperatingUnitAccount::firstOrCreate(
+                            ['operating_unit_id' => $unit->id, 'event_type' => $event],
+                            ['account_id' => $account->id],
+                        );
+                    }
+                }
             }
         }
     }

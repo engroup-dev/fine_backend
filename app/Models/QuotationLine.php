@@ -24,6 +24,11 @@ final class QuotationLine extends Model
         'width_m',
         'height_m',
         'unit_price',
+        'discount_amount',
+    ];
+
+    protected $attributes = [
+        'discount_amount' => 0,
     ];
 
     protected $casts = [
@@ -32,6 +37,7 @@ final class QuotationLine extends Model
         'width_m' => 'decimal:3',
         'height_m' => 'decimal:3',
         'unit_price' => 'decimal:4',
+        'discount_amount' => 'decimal:4',
     ];
 
     public function quotation(): BelongsTo
@@ -51,6 +57,6 @@ final class QuotationLine extends Model
 
     public function lineTotal(): float
     {
-        return round((float) $this->quantity * (float) $this->unit_price, 4);
+        return round((float) $this->quantity * (float) $this->unit_price - (float) $this->discount_amount, 4);
     }
 }

@@ -133,6 +133,9 @@ At POS counter checkout, sales can be settled via multiple payment portions (2�
 
 In the same transaction, each cheque portion immediately calls `ChequeService::receive`, issuing an in-portfolio cheque (`DR 124 / CR client receivable`) and reducing client balance, leaving the net client balance unchanged. A `SalePayment` is recorded for each portion: cash/bank portions link to the sale entry, while cheque portions link to the cheque's portfolio entry.
 
+#### Discounts (FR-INV-014, FR-INV-015, BR-INV-017)
+Line discounts (`lines.*.discount_amount`) and invoice discounts (`invoice_discount`) are recorded separately on the sale (`gross_amount`, `invoice_discount`, `total_amount` = net payable). When any discount is granted (`Σ line discounts + invoice_discount > 0`), checkout credits the unit's sales revenue account (`40201`–`40204`) for `gross_amount`, debits the unit's granted discount contra-revenue leaf under `407` (`40701`–`40704` via `SalesAccounts::discountFor`) for the combined discount, and debits treasury / receivable / split portions for the net `total_amount`. Returns (`40401`–`40404` via `SalesAccounts::returnsFor`) and discounts never post to the unit's revenue account (SAL rule). Sales without a discount post identical lines to an undiscounted sale without resolving a discount account.
+
 ### Event: PaymentRequest.Paid
 ```
 // If realized rate differs from booked:

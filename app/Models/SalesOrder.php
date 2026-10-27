@@ -48,6 +48,8 @@ final class SalesOrder extends Model
     protected $casts = [
         'status' => SalesOrderStatus::class,
         'fulfillment_status' => SaleFulfillmentStatus::class,
+        'gross_amount' => 'decimal:4',
+        'invoice_discount' => 'decimal:4',
         'total_amount' => 'decimal:4',
         'total_cost' => 'decimal:4',
         'amount_paid' => 'decimal:4',

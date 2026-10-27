@@ -25,7 +25,7 @@ final class QuotationController extends Controller
 {
     private const LINE_COLUMNS = [
         'position', 'line_type', 'description', 'inventory_item_id', 'bundle_id',
-        'quantity', 'length_m', 'width_m', 'height_m', 'unit_price',
+        'quantity', 'length_m', 'width_m', 'height_m', 'unit_price', 'discount_amount',
     ];
 
     public function __construct(
@@ -70,6 +70,7 @@ final class QuotationController extends Controller
         $validated = $request->validate([
             'client_id' => ['required', 'uuid'],
             'valid_until' => ['nullable', 'date', 'after_or_equal:today'],
+            'invoice_discount' => ['nullable', 'numeric', 'min:0'],
             'notes' => ['nullable', 'string'],
             ...$this->lineRules(required: true),
         ]);
@@ -88,14 +89,28 @@ final class QuotationController extends Controller
         }
 
         $lines = $this->checkoutService->normalizeLines($validated['lines']);
+        $gross = round(array_sum(array_map(fn (array $l): float => $l['quantity'] * $l['unit_price'], $lines)), 4);
+        $subtotal = round(array_sum(array_map(fn (array $l): float => $l['quantity'] * $l['unit_price'] - $l['discount_amount'], $lines)), 4);
+        $invoiceDiscount = round((float) ($validated['invoice_discount'] ?? 0), 4);
 
-        $quotation = DB::transaction(function () use ($validated, $unitId, $lines, $request): Quotation {
+        if ($invoiceDiscount < 0 || $invoiceDiscount > $subtotal + 0.0001) {
+            throw new SalesRuleException(
+                "Invoice discount {$invoiceDiscount} exceeds subtotal {$subtotal}.",
+                'DISCOUNT_INVALID',
+            );
+        }
+
+        $total = round($subtotal - $invoiceDiscount, 4);
+
+        $quotation = DB::transaction(function () use ($validated, $unitId, $lines, $gross, $invoiceDiscount, $total, $request): Quotation {
             $quotation = Quotation::create([
                 'operating_unit_id' => $unitId,
                 'quotation_number' => $this->documentNumbers->next(DocumentNumberService::QUOTATION),
                 'client_id' => $validated['client_id'],
                 'valid_until' => $validated['valid_until'] ?? today()->addDays(14)->toDateString(),
-                'total_amount' => round(array_sum(array_map(fn (array $l): float => $l['quantity'] * $l['unit_price'], $lines)), 4),
+                'gross_amount' => $gross,
+                'invoice_discount' => $invoiceDiscount,
+                'total_amount' => $total,
                 'notes' => $validated['notes'] ?? null,
                 'created_by_user_id' => $request->user()->id,
             ]);
@@ -139,6 +154,7 @@ final class QuotationController extends Controller
             'payment_method' => ['required', Rule::in(['cash', 'bank', 'receivable', 'split'])],
             'cash_account_id' => ['nullable', 'uuid'],
             'tendered_amount' => ['nullable', 'numeric', 'min:0'],
+            'invoice_discount' => ['nullable', 'numeric', 'min:0'],
             'notes' => ['nullable', 'string'],
             ...SaleCheckoutService::splitPaymentRules(),
             ...$this->lineRules(required: false),
@@ -174,12 +190,17 @@ final class QuotationController extends Controller
             fn ($line) => array_intersect_key($line->toArray(), array_flip(self::LINE_COLUMNS))
         )->all();
 
-        $sale = DB::transaction(function () use ($quotation, $validated, $lines, $request): SalesOrder {
+        $invoiceDiscount = array_key_exists('invoice_discount', $validated) && $validated['invoice_discount'] !== null
+            ? $validated['invoice_discount']
+            : $quotation->invoice_discount;
+
+        $sale = DB::transaction(function () use ($quotation, $validated, $lines, $invoiceDiscount, $request): SalesOrder {
             $sale = $this->checkoutService->checkout($this->unitContext->unit(), [
                 'client_id' => $quotation->client_id,
                 'payment_method' => $validated['payment_method'],
                 'cash_account_id' => $validated['cash_account_id'] ?? null,
                 'tendered_amount' => $validated['tendered_amount'] ?? null,
+                'invoice_discount' => $invoiceDiscount,
                 'client_request_id' => $validated['client_request_id'] ?? null,
                 'quotation_id' => $quotation->id,
                 'notes' => $validated['notes'] ?? $quotation->notes,
@@ -211,6 +232,7 @@ final class QuotationController extends Controller
             'lines.*.description' => ['nullable', 'string', 'max:255'],
             'lines.*.quantity' => ['required', 'numeric', 'gt:0'],
             'lines.*.unit_price' => ['required', 'numeric', 'min:0'],
+            'lines.*.discount_amount' => ['nullable', 'numeric', 'min:0'],
             'lines.*.length_m' => ['nullable', 'numeric', 'gt:0'],
             'lines.*.width_m' => ['nullable', 'numeric', 'gt:0'],
             'lines.*.height_m' => ['nullable', 'numeric', 'gt:0'],

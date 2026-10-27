@@ -97,6 +97,7 @@ final class SaleCheckoutService
      *     cash_account_id?: string|null,
      *     client_request_id?: string|null,
      *     quotation_id?: string|null,
+     *     invoice_discount?: float|int|string|null,
      *     notes?: string|null,
      *     lines: array<int, array{
      *         line_type?: string|null,
@@ -106,6 +107,7 @@ final class SaleCheckoutService
      *         description?: string|null,
      *         quantity: float|int|string,
      *         unit_price?: float|int|string|null,
+     *         discount_amount?: float|int|string|null,
      *         length_m?: float|int|string|null,
      *         width_m?: float|int|string|null,
      *         height_m?: float|int|string|null,
@@ -140,7 +142,25 @@ final class SaleCheckoutService
             : null;
         $lines = $this->normalizeLines($data['lines'] ?? [], isInternal: $isInternal);
 
-        $total = round(array_sum(array_map(fn (array $l): float => $l['quantity'] * $l['unit_price'], $lines)), 4);
+        $invoiceDiscount = round((float) ($data['invoice_discount'] ?? 0), 4);
+        if ($invoiceDiscount < 0) {
+            throw new SalesRuleException('Invoice discount cannot be negative.', 'DISCOUNT_INVALID');
+        }
+        if ($isInternal && $invoiceDiscount > 0) {
+            throw new SalesRuleException('Internal transfers are priced at cost and cannot carry discounts.', 'DISCOUNT_INVALID');
+        }
+
+        $gross = round(array_sum(array_map(fn (array $l): float => $l['quantity'] * $l['unit_price'], $lines)), 4);
+        $subtotal = round(array_sum(array_map(fn (array $l): float => $l['quantity'] * $l['unit_price'] - $l['discount_amount'], $lines)), 4);
+
+        if ($invoiceDiscount > $subtotal + 0.0001) {
+            throw new SalesRuleException(
+                "Invoice discount {$invoiceDiscount} exceeds subtotal {$subtotal}.",
+                'DISCOUNT_INVALID',
+            );
+        }
+
+        $total = round($subtotal - $invoiceDiscount, 4);
 
         if (! $isInternal && $total <= 0) {
             throw new SalesRuleException('A sale to a client must have a total above zero.', 'ZERO_TOTAL');
@@ -169,7 +189,7 @@ final class SaleCheckoutService
         $walkInPhone = $isWalkIn && isset($data['walk_in_phone']) ? trim((string) $data['walk_in_phone']) : null;
 
         try {
-            return DB::transaction(function () use ($unit, $data, $seller, $client, $buyerUnit, $method, $cashAccount, $lines, $total, $requestId, $tendered, $changeGiven, $splitPayments, $walkInName, $walkInPhone): SalesOrder {
+            return DB::transaction(function () use ($unit, $data, $seller, $client, $buyerUnit, $method, $cashAccount, $lines, $gross, $invoiceDiscount, $total, $requestId, $tendered, $changeGiven, $splitPayments, $walkInName, $walkInPhone): SalesOrder {
                 $order = SalesOrder::create([
                     'operating_unit_id' => $unit->id,
                     'order_number' => $this->documentNumbers->next(DocumentNumberService::SALE),
@@ -196,6 +216,8 @@ final class SaleCheckoutService
                     $order->lines()->create($line);
                 }
 
+                $order->gross_amount = $gross;
+                $order->invoice_discount = $invoiceDiscount;
                 $order->total_amount = $total;
                 $order->save();
 
@@ -609,6 +631,7 @@ final class SaleCheckoutService
         if ($isInternal) {
             $this->postInternalTransfer($order, $costByAccount);
 
+            $order->gross_amount = $order->total_cost;
             $order->total_amount = $order->total_cost;
             $order->amount_paid = $order->total_cost;
             $order->fulfillment_status = SaleFulfillmentStatus::Delivered;
@@ -620,10 +643,17 @@ final class SaleCheckoutService
 
         $client = $order->client_id !== null ? Client::with('account')->whereKey($order->client_id)->lockForUpdate()->first() : null;
         $total = (float) $order->total_amount;
+        $lineDiscounts = round((float) $order->lines()->sum('discount_amount'), 4);
+        $invoiceDiscount = round((float) $order->invoice_discount, 4);
+        $totalDiscount = round($lineDiscounts + $invoiceDiscount, 4);
+        $gross = round($total + $totalDiscount, 4);
         $cashAccount = $order->cash_account_id !== null ? CashAccount::with('account')->find($order->cash_account_id) : null;
+        $orderUnit = $order->operatingUnit()->with('revenueAccount')->first();
+        $revenueCode = SalesAccounts::revenueFor($orderUnit);
+        $discountCode = $totalDiscount > 0 ? SalesAccounts::discountFor($orderUnit) : null;
 
         // Money (or the promise of it) against revenue, cost out of stock —
-        // one balanced entry (SALE-07, FR-INV-024).
+        // one balanced entry (SALE-07, FR-INV-014, FR-INV-015, BR-INV-017, FR-INV-024).
         if ($order->payment_method === 'split') {
             $journalLines = [];
             $chequeTotal = 0.0;
@@ -650,9 +680,17 @@ final class SaleCheckoutService
                 ];
             }
 
+            if ($discountCode !== null) {
+                $journalLines[] = [
+                    'account_code' => $discountCode,
+                    'debit' => $totalDiscount,
+                    'operating_unit_id' => $order->operating_unit_id,
+                ];
+            }
+
             $journalLines[] = [
-                'account_code' => SalesAccounts::revenueFor($order->operatingUnit()->with('revenueAccount')->first()),
-                'credit' => $total,
+                'account_code' => $revenueCode,
+                'credit' => $gross,
                 'operating_unit_id' => $order->operating_unit_id,
             ];
         } else {
@@ -668,7 +706,20 @@ final class SaleCheckoutService
                     // Only the receivable is a client's account; a cash sale debits the treasury.
                     'client_id' => $order->isReceivable() ? $this->partyFor($client, $debitAccount) : null,
                 ],
-                ['account_code' => SalesAccounts::revenueFor($order->operatingUnit()->with('revenueAccount')->first()), 'credit' => $total, 'operating_unit_id' => $order->operating_unit_id],
+            ];
+
+            if ($discountCode !== null) {
+                $journalLines[] = [
+                    'account_code' => $discountCode,
+                    'debit' => $totalDiscount,
+                    'operating_unit_id' => $order->operating_unit_id,
+                ];
+            }
+
+            $journalLines[] = [
+                'account_code' => $revenueCode,
+                'credit' => $gross,
+                'operating_unit_id' => $order->operating_unit_id,
             ];
         }
 
@@ -970,9 +1021,27 @@ final class SaleCheckoutService
             $type = $line['line_type'] ?? (! empty($line['bundle_id']) && empty($line['inventory_item_id']) ? SalesOrderLine::TYPE_BUNDLE : SalesOrderLine::TYPE_ITEM);
             $quantity = (float) ($line['quantity'] ?? 0);
             $unitPrice = (float) ($line['unit_price'] ?? 0);
+            $discountAmount = round((float) ($line['discount_amount'] ?? 0), 4);
 
             if ($quantity <= 0 || $unitPrice < 0) {
                 throw new SalesRuleException('Every line needs a quantity above zero and a price of zero or more.', 'INVALID_LINE');
+            }
+
+            if ($discountAmount < 0) {
+                throw new SalesRuleException('Line discount cannot be negative.', 'DISCOUNT_INVALID', ['position' => $position]);
+            }
+
+            if ($isInternal && $discountAmount > 0) {
+                throw new SalesRuleException('Internal transfers are priced at cost and cannot carry discounts.', 'DISCOUNT_INVALID', ['position' => $position]);
+            }
+
+            $lineGross = round($quantity * $unitPrice, 4);
+            if ($discountAmount > $lineGross + 0.0001) {
+                throw new SalesRuleException(
+                    "Line discount {$discountAmount} exceeds line gross {$lineGross}.",
+                    'DISCOUNT_INVALID',
+                    ['position' => $position],
+                );
             }
 
             if ($type === SalesOrderLine::TYPE_BUNDLE) {
@@ -995,6 +1064,7 @@ final class SaleCheckoutService
                     'stock_lot_id' => null,
                     'quantity' => $quantity,
                     'unit_price' => $unitPrice,
+                    'discount_amount' => $discountAmount,
                 ];
             }
 
@@ -1016,6 +1086,7 @@ final class SaleCheckoutService
                 'width_m' => $line['width_m'] ?? null,
                 'height_m' => $line['height_m'] ?? null,
                 'unit_price' => $unitPrice,
+                'discount_amount' => $discountAmount,
             ];
         }, array_values($lines), array_keys(array_values($lines)));
     }

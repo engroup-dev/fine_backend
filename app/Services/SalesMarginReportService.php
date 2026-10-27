@@ -71,6 +71,7 @@ final class SalesMarginReportService
             'sales_order_lines.description as line_description',
             'sales_order_lines.quantity',
             'sales_order_lines.unit_price',
+            'sales_order_lines.discount_amount',
             'sales_order_lines.unit_cost_actual as line_unit_cost_actual',
             'sales_order_lines.stock_lot_id',
             'sales_order_lines.inventory_item_id',
@@ -82,6 +83,7 @@ final class SalesMarginReportService
             'item_categories.name as category_name',
             'sales_orders.id as sales_order_id',
             'sales_orders.order_number',
+            'sales_orders.invoice_discount',
             'sales_orders.client_id',
             'entities.name as client_name',
             'bundles.id as b_id',
@@ -94,9 +96,20 @@ final class SalesMarginReportService
         $totalCost = 0.0;
         $groups = [];
 
+        // Revenue is what the customer actually pays for the line: its own discount
+        // off, and its share of the invoice discount, allocated by line net (BR-INV-017).
+        $orderSubtotals = [];
+        foreach ($lines as $line) {
+            $orderSubtotals[$line->sales_order_id] = ($orderSubtotals[$line->sales_order_id] ?? 0.0)
+                + (float) $line->quantity * (float) $line->unit_price - (float) $line->discount_amount;
+        }
+
         foreach ($lines as $line) {
             $quantity = (float) $line->quantity;
-            $revenue = $quantity * (float) $line->unit_price;
+            $lineNet = $quantity * (float) $line->unit_price - (float) $line->discount_amount;
+            $subtotal = $orderSubtotals[$line->sales_order_id] ?? 0.0;
+            $invoiceShare = $subtotal > 0 ? (float) $line->invoice_discount * $lineNet / $subtotal : 0.0;
+            $revenue = $lineNet - $invoiceShare;
 
             // The line's own actual cost is what checkout recorded from the stock really issued
             // (possibly across several lots, and the only cost bundle lines carry). The lot's cost is

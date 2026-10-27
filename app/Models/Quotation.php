@@ -35,6 +35,8 @@ final class Quotation extends Model
         'client_id',
         'valid_until',
         'status',
+        'gross_amount',
+        'invoice_discount',
         'total_amount',
         'converted_sales_order_id',
         'notes',
@@ -43,6 +45,8 @@ final class Quotation extends Model
 
     protected $casts = [
         'valid_until' => 'date',
+        'gross_amount' => 'decimal:4',
+        'invoice_discount' => 'decimal:4',
         'total_amount' => 'decimal:4',
     ];
 

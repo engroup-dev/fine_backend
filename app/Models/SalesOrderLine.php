@@ -31,11 +31,13 @@ final class SalesOrderLine extends Model
         'width_m',
         'height_m',
         'unit_price',
+        'discount_amount',
         'unit_cost_actual',
     ];
 
     protected $attributes = [
         'line_type' => self::TYPE_ITEM,
+        'discount_amount' => 0,
     ];
 
     protected $casts = [
@@ -44,6 +46,7 @@ final class SalesOrderLine extends Model
         'width_m' => 'decimal:3',
         'height_m' => 'decimal:3',
         'unit_price' => 'decimal:4',
+        'discount_amount' => 'decimal:4',
         'unit_cost_actual' => 'decimal:4',
     ];
 
@@ -82,6 +85,6 @@ final class SalesOrderLine extends Model
 
     public function lineTotal(): float
     {
-        return round((float) $this->quantity * (float) $this->unit_price, 4);
+        return round((float) $this->quantity * (float) $this->unit_price - (float) $this->discount_amount, 4);
     }
 }
