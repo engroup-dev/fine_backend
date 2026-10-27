@@ -11,8 +11,10 @@ use Symfony\Component\HttpFoundation\Response;
 /**
  * Module-level permission check for a route group: reads (GET/HEAD) need the
  * view permission, everything else the write permission. Usage:
- * `require.module:view-foam,edit-foam`. Runs after require.role, which still
- * bounds who can reach the group at all.
+ * `require.module:view-foam,edit-foam`. Either slot may list alternatives
+ * separated by `|` (`view-sales|create-sales-returns`): holding any one of
+ * them is enough. Runs after require.role, which still bounds who can reach
+ * the group at all.
  */
 final class RequireModulePermission
 {
@@ -33,14 +35,18 @@ final class RequireModulePermission
             ? $viewPermission
             : ($writePermission ?? $viewPermission);
 
-        if ($user->hasPermission($permission)) {
-            return $next($request);
+        $alternatives = explode('|', $permission);
+
+        foreach ($alternatives as $alternative) {
+            if ($user->hasPermission($alternative)) {
+                return $next($request);
+            }
         }
 
         return response()->json([
             'message' => 'You lack the necessary permission for this resource.',
             'code' => 'ACCESS_DENIED',
-            'required_permissions' => [$permission],
+            'required_permissions' => $alternatives,
         ], 403);
     }
 }

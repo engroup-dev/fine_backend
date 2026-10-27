@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Services;
 
 use App\Models\SalesOrderLine;
+use App\Models\SalesReturnLine;
 
 final class SalesMarginReportService
 {
@@ -104,12 +105,24 @@ final class SalesMarginReportService
                 + (float) $line->quantity * (float) $line->unit_price - (float) $line->discount_amount;
         }
 
+        // BR-INV-013: returns net out of the line they were raised against —
+        // their quantity, the refunded amount, and the returned units' cost
+        // (damaged goods' cost moves to waste, so it leaves COGS too).
+        $returnedByLine = $lines->isEmpty() ? collect() : SalesReturnLine::query()
+            ->whereIn('sales_order_line_id', $lines->pluck('line_id')->all())
+            ->selectRaw('sales_order_line_id, SUM(quantity) as qty, SUM(amount) as amt')
+            ->groupBy('sales_order_line_id')
+            ->get()
+            ->keyBy('sales_order_line_id');
+
         foreach ($lines as $line) {
-            $quantity = (float) $line->quantity;
-            $lineNet = $quantity * (float) $line->unit_price - (float) $line->discount_amount;
+            $returned = $returnedByLine->get($line->line_id);
+            $returnedQuantity = $returned !== null ? (float) $returned->qty : 0.0;
+            $quantity = (float) $line->quantity - $returnedQuantity;
+            $lineNet = (float) $line->quantity * (float) $line->unit_price - (float) $line->discount_amount;
             $subtotal = $orderSubtotals[$line->sales_order_id] ?? 0.0;
             $invoiceShare = $subtotal > 0 ? (float) $line->invoice_discount * $lineNet / $subtotal : 0.0;
-            $revenue = $lineNet - $invoiceShare;
+            $revenue = $lineNet - $invoiceShare - ($returned !== null ? (float) $returned->amt : 0.0);
 
             // The line's own actual cost is what checkout recorded from the stock really issued
             // (possibly across several lots, and the only cost bundle lines carry). The lot's cost is

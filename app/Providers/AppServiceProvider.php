@@ -27,6 +27,8 @@ use App\Models\PurchaseOrderItem;
 use App\Models\Quotation;
 use App\Models\Role;
 use App\Models\SalesOrder;
+use App\Models\SalesReturn;
+use App\Models\SalesReturnLine;
 use App\Models\StockLot;
 use App\Models\TreasuryTransfer;
 use App\Models\TreasuryVoucher;
@@ -115,6 +117,8 @@ class AppServiceProvider extends ServiceProvider
         Client::observe(AuditObserver::class);
         Entity::observe(AuditObserver::class);
         SalesOrder::observe(AuditObserver::class);
+        SalesReturn::observe(AuditObserver::class);
+        SalesReturnLine::observe(AuditObserver::class);
         JournalEntry::observe(AuditObserver::class);
         CutterWorkOrder::observe(AuditObserver::class);
 

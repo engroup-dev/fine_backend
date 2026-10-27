@@ -54,6 +54,7 @@ use App\Http\Controllers\Api\v1\RoleController;
 use App\Http\Controllers\Api\v1\SaleBundleController;
 use App\Http\Controllers\Api\v1\SaleController;
 use App\Http\Controllers\Api\v1\SalesMarginReportController;
+use App\Http\Controllers\Api\v1\SalesReturnController;
 use App\Http\Controllers\Api\v1\StockLotController;
 use App\Http\Controllers\Api\v1\StockMovementCardController;
 use App\Http\Controllers\Api\v1\SupplierController;
@@ -353,6 +354,19 @@ Route::prefix('v1')->group(function () {
                 Route::get('/held-carts', [HeldCartController::class, 'index']);
                 Route::post('/held-carts', [HeldCartController::class, 'store']);
                 Route::delete('/held-carts/{id}', [HeldCartController::class, 'destroy'])->whereUuid('id');
+            });
+
+            // Sales returns, reads (BR-INV-013): whoever sees sales or raises returns —
+            // cashiers view, accounting managers (no view-sales) still reach what they raise.
+            Route::middleware(['require.role:owner,store-manager,pos-cashier,cutter-manager,unit_manager,manager,accounting-manager', 'require.module:view-sales|create-sales-returns'])->group(function () {
+                Route::get('/sales/{id}/returnable', [SalesReturnController::class, 'returnable'])->whereUuid('id');
+                Route::get('/sales-returns', [SalesReturnController::class, 'index']);
+                Route::get('/sales-returns/{id}', [SalesReturnController::class, 'show'])->whereUuid('id');
+            });
+
+            // Sales returns (BR-INV-013) — managers only; a cashier can see returns but not raise one.
+            Route::middleware(['require.role:owner,store-manager,unit_manager,manager,accounting-manager', 'require.module:create-sales-returns'])->group(function () {
+                Route::post('/sales/{id}/returns', [SalesReturnController::class, 'store'])->whereUuid('id');
             });
 
             // Credit decisions — managers only; a cashier cannot approve their own over-limit sale.

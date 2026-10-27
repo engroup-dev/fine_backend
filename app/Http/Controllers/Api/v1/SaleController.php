@@ -132,6 +132,7 @@ final class SaleController extends Controller
                 'soldBy:id,name',
                 'priceOverrideBy:id,name',
                 'creditApprovalRequest.decidedBy:id,name',
+                'returns:id,sales_order_id,number,return_date,amount,refund_method',
             ])->findOrFail($id)
         );
     }
@@ -269,6 +270,7 @@ final class SaleController extends Controller
             'invoice_discount' => (float) $sale->invoice_discount,
             'total_amount' => (float) $sale->total_amount,
             'amount_paid' => (float) $sale->amount_paid,
+            'returned_amount' => (float) $sale->returned_amount,
             'outstanding' => $sale->outstanding(),
             'status' => $sale->status->value,
             'fulfillment_status' => $sale->fulfillment_status?->value,

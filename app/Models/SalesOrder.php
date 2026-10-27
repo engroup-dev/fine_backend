@@ -23,7 +23,9 @@ final class SalesOrder extends Model
 
     /**
      * Money fields are excluded: totals derive from lines, cost from the lots
-     * actually drawn, and amount_paid only ever moves through SaleCheckoutService.
+     * actually drawn, amount_paid only ever moves through SaleCheckoutService
+     * (payments) and SalesReturnService (cash/bank refunds), and returned_amount
+     * only through SalesReturnService.
      */
     protected $fillable = [
         'operating_unit_id',
@@ -60,6 +62,7 @@ final class SalesOrder extends Model
         'total_amount' => 'decimal:4',
         'total_cost' => 'decimal:4',
         'amount_paid' => 'decimal:4',
+        'returned_amount' => 'decimal:4',
         'record_version' => 'integer',
     ];
 
@@ -96,6 +99,11 @@ final class SalesOrder extends Model
         return $this->hasMany(SalePayment::class);
     }
 
+    public function returns(): HasMany
+    {
+        return $this->hasMany(SalesReturn::class);
+    }
+
     public function soldBy(): BelongsTo
     {
         return $this->belongsTo(User::class, 'sold_by_user_id');
@@ -126,7 +134,7 @@ final class SalesOrder extends Model
 
     public function outstanding(): float
     {
-        return round((float) $this->total_amount - (float) $this->amount_paid, 4);
+        return max(0.0, round((float) $this->total_amount - (float) ($this->returned_amount ?? 0) - (float) $this->amount_paid, 4));
     }
 
     public function isReceivable(): bool

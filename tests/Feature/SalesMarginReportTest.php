@@ -13,6 +13,8 @@ use App\Models\OperatingUnit;
 use App\Models\Role;
 use App\Models\SalesOrder;
 use App\Models\SalesOrderLine;
+use App\Models\SalesReturn;
+use App\Models\SalesReturnLine;
 use App\Models\StockLot;
 use App\Models\UnitBlueprint;
 use App\Models\User;
@@ -599,4 +601,82 @@ test('discounted sales count their net revenue: line discount plus a share of th
     expect((float) $rows[$this->itemA->id]['revenue'])->toBe(277.5)
         ->and((float) $rows[$this->itemB->id]['revenue'])->toBe(92.5)
         ->and((float) $response['totals']['revenue'])->toBe(370.0);
+});
+
+test('returns net out of each line: quantity, refunded amount and returned cost, a fully returned line contributing zero', function (): void {
+    $order = SalesOrder::create([
+        'operating_unit_id' => $this->unitA->id,
+        'order_number' => 'SO-2026-0100',
+        'client_id' => $this->client->id,
+        'buyer_type' => 'client',
+        'status' => SalesOrderStatus::Completed,
+        'fulfillment_status' => SaleFulfillmentStatus::Delivered,
+        'channel' => 'pos',
+    ]);
+
+    // Item A: 4 × 200 = 800 at 120 cost each.
+    $lineA = SalesOrderLine::create([
+        'sales_order_id' => $order->id,
+        'inventory_item_id' => $this->itemA->id,
+        'stock_lot_id' => $this->lotA->id,
+        'quantity' => 4,
+        'unit_price' => 200,
+        'unit_cost_actual' => 120,
+        'position' => 1,
+    ]);
+
+    // Item B: 2 × 50 = 100 at 30 cost each — returned in full below.
+    $lineB = SalesOrderLine::create([
+        'sales_order_id' => $order->id,
+        'inventory_item_id' => $this->itemB->id,
+        'stock_lot_id' => $this->lotB->id,
+        'quantity' => 2,
+        'unit_price' => 50,
+        'unit_cost_actual' => 30,
+        'position' => 2,
+    ]);
+
+    $return = SalesReturn::create([
+        'operating_unit_id' => $this->unitA->id,
+        'sales_order_id' => $order->id,
+        'client_id' => $this->client->id,
+        'number' => 'RET-2026-00001',
+        'return_date' => now()->toDateString(),
+        'refund_method' => 'credit',
+        'amount' => 500,
+        'total_cost' => 300,
+        'created_by_user_id' => $this->owner->id,
+    ]);
+
+    // One A restocked, one A damaged — both leave COGS; both B units back.
+    foreach ([
+        [$lineA, 1, 200, 'restock', 120],
+        [$lineA, 1, 200, 'damaged', 120],
+        [$lineB, 2, 100, 'restock', 30],
+    ] as [$line, $quantity, $amount, $condition, $unitCost]) {
+        SalesReturnLine::create([
+            'sales_return_id' => $return->id,
+            'sales_order_line_id' => $line->id,
+            'quantity' => $quantity,
+            'amount' => $amount,
+            'condition' => $condition,
+            'unit_cost' => $unitCost,
+        ]);
+    }
+
+    $response = ($this->asOwner)()->getJson('/api/v1/reports/sales-margin?group_by=item&company_wide=1')
+        ->assertOk()
+        ->json();
+
+    $rows = collect($response['rows'])->keyBy('key');
+
+    expect((float) $rows[$this->itemA->id]['quantity'])->toBe(2.0)
+        ->and((float) $rows[$this->itemA->id]['revenue'])->toBe(400.0)
+        ->and((float) $rows[$this->itemA->id]['cost'])->toBe(240.0)
+        ->and((float) $rows[$this->itemB->id]['quantity'])->toBe(0.0)
+        ->and((float) $rows[$this->itemB->id]['revenue'])->toBe(0.0)
+        ->and((float) $rows[$this->itemB->id]['cost'])->toBe(0.0)
+        ->and((float) $response['totals']['revenue'])->toBe(400.0)
+        ->and((float) $response['totals']['cost'])->toBe(240.0)
+        ->and((float) $response['totals']['margin'])->toBe(160.0);
 });

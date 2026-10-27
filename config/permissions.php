@@ -44,6 +44,7 @@ return [
         ['slug' => 'view-furniture', 'name' => 'عرض الأثاث', 'module' => 'furniture', 'action' => 'view'],
         ['slug' => 'edit-furniture', 'name' => 'تعديل الأثاث', 'module' => 'furniture', 'action' => 'edit'],
         ['slug' => 'create-sales', 'name' => 'إنشاء مبيعات', 'module' => 'sales', 'action' => 'create'],
+        ['slug' => 'create-sales-returns', 'name' => 'إنشاء مرتجعات المبيعات', 'module' => 'sales', 'action' => 'create'],
         ['slug' => 'view-sales', 'name' => 'عرض المبيعات', 'module' => 'sales', 'action' => 'view'],
         ['slug' => 'edit-sales', 'name' => 'تعديل المبيعات', 'module' => 'sales', 'action' => 'edit'],
         ['slug' => 'edit-inventory', 'name' => 'تعديل المخزون', 'module' => 'inventory', 'action' => 'edit'],
@@ -83,7 +84,7 @@ return [
 
     'role_permissions' => [
         'admin' => ['*'],
-        'accounting-manager' => ['approve-credit', 'approve-price-override', 'create-treasury', 'edit-clients', 'edit-inventory', 'edit-procurement', 'manage-accounting', 'manage-hr', 'settle-payables', 'view-accounting', 'view-clients', 'view-debtor-statements', 'view-hr', 'view-inventory', 'view-procurement', 'view-treasury'],
+        'accounting-manager' => ['approve-credit', 'approve-price-override', 'create-sales-returns', 'create-treasury', 'edit-clients', 'edit-inventory', 'edit-procurement', 'manage-accounting', 'manage-hr', 'settle-payables', 'view-accounting', 'view-clients', 'view-debtor-statements', 'view-hr', 'view-inventory', 'view-procurement', 'view-treasury'],
         'assembler' => ['edit-furniture', 'edit-inventory', 'view-accounting', 'view-furniture', 'view-inventory'],
         'cutter-manager' => ['create-cutting', 'create-sales', 'create-treasury', 'edit-cutting', 'edit-inventory', 'edit-procurement', 'manage-hr', 'manage-material-requests', 'view-accounting', 'view-cutting', 'view-hr', 'view-inventory', 'view-material-requests', 'view-procurement', 'view-sales', 'view-treasury'],
         'cutter-operator' => ['edit-cutting', 'edit-inventory', 'view-accounting', 'view-cutting', 'view-inventory'],
@@ -92,11 +93,11 @@ return [
         'furniture-manager' => ['create-furniture', 'create-treasury', 'edit-furniture', 'edit-inventory', 'edit-procurement', 'manage-hr', 'manage-material-requests', 'view-accounting', 'view-furniture', 'view-hr', 'view-inventory', 'view-material-requests', 'view-procurement', 'view-treasury'],
         'hr-manager' => ['create-treasury', 'create-users', 'edit-procurement', 'edit-users', 'manage-hr', 'manage-users', 'view-hr', 'view-procurement', 'view-treasury', 'view-users'],
         'inventory-manager' => ['create-treasury', 'edit-inventory', 'edit-procurement', 'view-accounting', 'view-inventory', 'view-procurement', 'view-treasury'],
-        'manager' => ['approve-credit', 'approve-price-override', 'create-sales', 'create-treasury', 'edit-clients', 'edit-cutting', 'edit-foam', 'edit-inventory', 'edit-procurement', 'manage-hr', 'manage-material-requests', 'settle-payables', 'view-accounting', 'view-clients', 'view-cutting', 'view-debtor-statements', 'view-foam', 'view-hr', 'view-inventory', 'view-material-requests', 'view-procurement', 'view-sales', 'view-treasury'],
+        'manager' => ['approve-credit', 'approve-price-override', 'create-sales', 'create-sales-returns', 'create-treasury', 'edit-clients', 'edit-cutting', 'edit-foam', 'edit-inventory', 'edit-procurement', 'manage-hr', 'manage-material-requests', 'settle-payables', 'view-accounting', 'view-clients', 'view-cutting', 'view-debtor-statements', 'view-foam', 'view-hr', 'view-inventory', 'view-material-requests', 'view-procurement', 'view-sales', 'view-treasury'],
         'pos-cashier' => ['create-sales', 'edit-clients', 'edit-inventory', 'view-accounting', 'view-clients', 'view-inventory', 'view-sales'],
         'procurement-manager' => ['create-procurement', 'create-treasury', 'edit-clients', 'edit-inventory', 'edit-procurement', 'manage-hr', 'view-accounting', 'view-clients', 'view-hr', 'view-inventory', 'view-procurement', 'view-treasury'],
-        'store-manager' => ['approve-credit', 'approve-price-override', 'create-sales', 'create-treasury', 'edit-clients', 'edit-inventory', 'edit-procurement', 'edit-sales', 'manage-hr', 'view-accounting', 'view-clients', 'view-hr', 'view-inventory', 'view-procurement', 'view-sales', 'view-treasury'],
+        'store-manager' => ['approve-credit', 'approve-price-override', 'create-sales', 'create-sales-returns', 'create-treasury', 'edit-clients', 'edit-inventory', 'edit-procurement', 'edit-sales', 'manage-hr', 'view-accounting', 'view-clients', 'view-hr', 'view-inventory', 'view-procurement', 'view-sales', 'view-treasury'],
         'treasury-officer' => ['approve-treasury', 'create-treasury', 'edit-inventory', 'edit-procurement', 'settle-payables', 'view-accounting', 'view-debtor-statements', 'view-inventory', 'view-procurement', 'view-treasury'],
-        'unit_manager' => ['approve-credit', 'approve-price-override', 'create-sales', 'create-treasury', 'edit-clients', 'edit-cutting', 'edit-foam', 'edit-inventory', 'edit-procurement', 'manage-hr', 'manage-material-requests', 'settle-payables', 'view-accounting', 'view-clients', 'view-cutting', 'view-debtor-statements', 'view-foam', 'view-hr', 'view-inventory', 'view-material-requests', 'view-procurement', 'view-sales', 'view-treasury'],
+        'unit_manager' => ['approve-credit', 'approve-price-override', 'create-sales', 'create-sales-returns', 'create-treasury', 'edit-clients', 'edit-cutting', 'edit-foam', 'edit-inventory', 'edit-procurement', 'manage-hr', 'manage-material-requests', 'settle-payables', 'view-accounting', 'view-clients', 'view-cutting', 'view-debtor-statements', 'view-foam', 'view-hr', 'view-inventory', 'view-material-requests', 'view-procurement', 'view-sales', 'view-treasury'],
     ],
 ];

@@ -76,7 +76,13 @@ class PosController extends Controller
                 'count' => $group->count(),
                 'total' => round((float) $group->sum('total_amount'), 4),
             ]),
+            // Refunds of sales returns are negative payments: they net into the
+            // totals and expected cash but are not counted as collections.
             'collected' => $payments->groupBy('method')->map(fn ($group) => [
+                'count' => $group->whereNull('sales_return_id')->count(),
+                'total' => round((float) $group->sum('amount'), 4),
+            ]),
+            'refunds' => $payments->whereNotNull('sales_return_id')->groupBy('method')->map(fn ($group) => [
                 'count' => $group->count(),
                 'total' => round((float) $group->sum('amount'), 4),
             ]),
@@ -113,7 +119,8 @@ class PosController extends Controller
     /**
      * Persist the Z-report drawer count. Expected cash is derived server-side
      * from the cash actually received that day — sales paid in cash plus cash
-     * collections on receivables into that treasury.
+     * collections on receivables into that treasury, less cash refunds of
+     * sales returns (negative payments, BR-INV-013).
      *
      * Rule TRS-06: Differences >= 0.005 post to 625 (shortage) / 44 (surplus).
      */

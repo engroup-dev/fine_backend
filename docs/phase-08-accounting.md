@@ -139,6 +139,25 @@ Line discounts (`lines.*.discount_amount`) and invoice discounts (`invoice_disco
 #### Price Floors and Overrides (FR-PRC-001, FR-IVT-025, BR-PRC-003, BR-PRC-004)
 Each sale and quotation records its `price_tier` (`retail` or `wholesale`, default `retail`), and each sale item line records `list_price` (the per-unit suggested price for that tier, falling back to retail when wholesale is unset). Before posting a client or walk-in sale (`PriceFloorGuard`), each item line's net unit price — after its line discount and its pro-rata share of `invoice_discount` — is checked against `floor = max(min_price, cost_price)` on the item's pricing basis (`BR-PRC-003`). Selling below the floor requires either a seller holding `approve-price-override` (recorded automatically as approver with reason `"approved by seller"`) or a manager override (`price_override: {login, password, reason}`) from a distinct active user holding `approve-price-override`, recording `price_override_by_user_id` and `price_override_reason` on the audited `SalesOrder` (`BR-PRC-004`).
 
+### Event: SalesReturn.Created (FR-INV-048, FR-INV-049, BR-INV-013, FR-IVT-032)
+A sales return is its own document (`sales_returns`, numbered `RET-YYYY-NNNNN`) raised from the original sale (`POST /sales/{id}/returns`, permission `create-sales-returns`) for some or all of its item lines; bundle lines are not returnable. **BR-INV-013**: each line's returned quantity can never exceed its sold quantity minus every earlier return of it (`RETURN_QUANTITY_EXCEEDS_SOLD`). Internal transfers and sales pending or refused credit approval cannot be returned (`RETURN_SALE_NOT_COMPLETED`); a closed register day refuses it (`POS_DAY_ALREADY_CLOSED`).
+
+Each returned line is priced at its net per unit — after its own discount and its pro-rata share of `invoice_discount` — × the returned quantity; the last units of a line take exactly what is left of its net. One journal entry dated the company-local day, source `SalesReturn`, all lines on the sale's unit:
+
+| Account | Dr | Cr |
+|---------|----|----|
+| Unit sales returns leaf `40401`–`40404` (`SalesAccounts::returnsFor`) | return amount | |
+| Treasury (cash/bank refund) or the client's own `122xxx` receivable (credit refund, tagged with `client_id`) | | return amount |
+| Unit `Purchases` inventory account (restocked cost) | restocked cost | |
+| Unit `Waste` account, `52` (damaged cost) | damaged cost | |
+| `51` COGS | | restocked + damaged cost |
+
+**Stock**: a `restock` quantity goes back into the lots that sale line drew from (found from the sale's `sale` movements), most recently drawn first and never past what each lot gave net of earlier returns. Each lot's quantity rises, a `consumed` lot returns to `available`, and an `inventory_movements` row (`movement_type = sale_return`, `reason = sales_return`, reference `SalesReturn`) is written at the lot's own cost (INV-06). The return line's `unit_cost` is the weighted cost of what came back. A `damaged` quantity moves no stock; its cost is the sale line's `unit_cost_actual` and moves from COGS to waste.
+
+**Refunds**: a cash or bank refund names a treasury of that kind (`TREASURY_KIND_MISMATCH`), cannot exceed what the sale took in (`RETURN_REFUND_METHOD_INVALID`) or the treasury's live balance (`TREASURY_INSUFFICIENT_BALANCE`), and is written as a **negative** `sale_payments` row on the original sale (`sales_return_id` set) that lowers `amount_paid`. A credit refund (registered clients only) lowers `clients.current_balance`. Every return adds to `sales_orders.returned_amount`; `outstanding = max(0, total_amount − returned_amount − amount_paid)`.
+
+**Daily close effect**: the POS daily report and Z-close derive expected cash from the day's cash `sale_payments`, so a cash refund nets out of the drawer's expected cash automatically. The daily report lists refunds separately (`refunds`) and does not count them as collections. The sales margin report nets each line's returned quantity, refunded amount and returned cost.
+
 ### Event: PaymentRequest.Paid
 ```
 // If realized rate differs from booked:

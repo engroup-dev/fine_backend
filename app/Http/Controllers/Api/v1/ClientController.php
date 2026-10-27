@@ -239,6 +239,7 @@ final class ClientController extends Controller
         // A client with any history is therefore kept; suspend it instead.
         $inUse = ReferenceGuard::firstReference([
             'sales_orders' => 'client_id',
+            'sales_returns' => 'client_id',
             'sale_payments' => 'client_id',
             'journal_lines' => 'client_id',
             'quotations' => 'client_id',

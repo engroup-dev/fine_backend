@@ -32,6 +32,8 @@ final class DocumentNumberService
 
     public const CHEQUE = 'CHQ';
 
+    public const SALES_RETURN = 'RET';
+
     /**
      * The next number for a document type, e.g. S-2026-00042.
      *

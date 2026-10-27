@@ -31,6 +31,7 @@ final class SalePayment extends Model
         'received_by_user_id',
         'journal_entry_id',
         'cheque_id',
+        'sales_return_id',
     ];
 
     protected $casts = [
@@ -58,5 +59,10 @@ final class SalePayment extends Model
     public function cheque(): BelongsTo
     {
         return $this->belongsTo(Cheque::class);
+    }
+
+    public function salesReturn(): BelongsTo
+    {
+        return $this->belongsTo(SalesReturn::class);
     }
 }
