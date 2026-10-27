@@ -35,6 +35,7 @@ final class InventoryItem extends Model
         'purchase_price',
         'selling_price',
         'wholesale_price',
+        'min_price',
         'price_basis',
     ];
 
@@ -49,6 +50,7 @@ final class InventoryItem extends Model
         'purchase_price' => 'decimal:4',
         'selling_price' => 'decimal:4',
         'wholesale_price' => 'decimal:4',
+        'min_price' => 'decimal:4',
     ];
 
     protected $attributes = [
@@ -91,25 +93,7 @@ final class InventoryItem extends Model
      */
     public function priceFor(float $quantity, ?float $lengthM = null, ?float $widthM = null, ?float $heightM = null): ?float
     {
-        if ($this->selling_price === null) {
-            return null;
-        }
-
-        $rate = (float) $this->selling_price;
-
-        if ($this->price_basis !== 'm3') {
-            return round($rate * $quantity, 4);
-        }
-
-        $volume = ($lengthM !== null && $widthM !== null && $heightM !== null)
-            ? $lengthM * $widthM * $heightM
-            : ($this->volume_m3 !== null ? (float) $this->volume_m3 : null);
-
-        if ($volume === null) {
-            return null;
-        }
-
-        return round($rate * $volume * $quantity, 4);
+        return $this->amountForRate($this->selling_price, $quantity, $lengthM, $widthM, $heightM);
     }
 
     /**
@@ -117,14 +101,35 @@ final class InventoryItem extends Model
      */
     public function wholesalePriceFor(float $quantity, ?float $lengthM = null, ?float $widthM = null, ?float $heightM = null): ?float
     {
-        if ($this->wholesale_price === null) {
+        return $this->amountForRate($this->wholesale_price, $quantity, $lengthM, $widthM, $heightM);
+    }
+
+    /**
+     * The minimum selling price for a quantity of this item (FR-IVT-025, BR-PRC-003).
+     */
+    public function minPriceFor(float $quantity, ?float $lengthM = null, ?float $widthM = null, ?float $heightM = null): ?float
+    {
+        return $this->amountForRate($this->min_price, $quantity, $lengthM, $widthM, $heightM);
+    }
+
+    /**
+     * The catalog cost for a quantity of this item on the same basis as selling_price (BR-PRC-003).
+     */
+    public function costFor(float $quantity, ?float $lengthM = null, ?float $widthM = null, ?float $heightM = null): ?float
+    {
+        return $this->amountForRate($this->cost_price, $quantity, $lengthM, $widthM, $heightM);
+    }
+
+    private function amountForRate(float|int|string|null $rate, float $quantity, ?float $lengthM, ?float $widthM, ?float $heightM): ?float
+    {
+        if ($rate === null) {
             return null;
         }
 
-        $rate = (float) $this->wholesale_price;
+        $numericRate = (float) $rate;
 
         if ($this->price_basis !== 'm3') {
-            return round($rate * $quantity, 4);
+            return round($numericRate * $quantity, 4);
         }
 
         $volume = ($lengthM !== null && $widthM !== null && $heightM !== null)
@@ -135,7 +140,7 @@ final class InventoryItem extends Model
             return null;
         }
 
-        return round($rate * $volume * $quantity, 4);
+        return round($numericRate * $volume * $quantity, 4);
     }
 
     /**

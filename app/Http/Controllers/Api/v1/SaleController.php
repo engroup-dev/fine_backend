@@ -31,7 +31,7 @@ final class SaleController extends Controller
 
     public function index(Request $request): JsonResponse
     {
-        $query = SalesOrder::with(['client.entity', 'buyerUnit', 'cashAccount'])
+        $query = SalesOrder::with(['client.entity', 'buyerUnit', 'cashAccount', 'priceOverrideBy:id,name'])
             ->withCount('lines')
             ->latest();
 
@@ -79,6 +79,11 @@ final class SaleController extends Controller
             'cash_account_id' => ['nullable', 'uuid'],
             'tendered_amount' => ['nullable', 'numeric', 'min:0'],
             'invoice_discount' => ['nullable', 'numeric', 'min:0'],
+            'price_tier' => ['nullable', Rule::in(['retail', 'wholesale'])],
+            'price_override' => ['nullable', 'array'],
+            'price_override.login' => ['required_with:price_override', 'string'],
+            'price_override.password' => ['required_with:price_override', 'string'],
+            'price_override.reason' => ['required_with:price_override', 'string', 'max:255'],
             'notes' => ['nullable', 'string'],
             ...SaleCheckoutService::splitPaymentRules(),
             'lines' => ['required', 'array', 'min:1'],
@@ -125,6 +130,7 @@ final class SaleController extends Controller
                 'payments.cheque',
                 'payments.receivedBy:id,name',
                 'soldBy:id,name',
+                'priceOverrideBy:id,name',
                 'creditApprovalRequest.decidedBy:id,name',
             ])->findOrFail($id)
         );
@@ -221,7 +227,7 @@ final class SaleController extends Controller
     {
         $sale = SalesOrder::with([
             'lines.inventoryItem', 'lines.stockLot', 'client.entity.primaryContact',
-            'buyerUnit', 'operatingUnit', 'cashAccount', 'soldBy:id,name',
+            'buyerUnit', 'operatingUnit', 'cashAccount', 'soldBy:id,name', 'priceOverrideBy:id,name',
         ])->findOrFail($id);
 
         if (! $sale->status->isSold()) {
@@ -237,6 +243,9 @@ final class SaleController extends Controller
             'date' => $sale->created_at?->toIso8601String(),
             'seller' => $sale->operatingUnit?->name,
             'sold_by' => $sale->soldBy?->name,
+            'price_override_by' => $sale->priceOverrideBy?->name,
+            'price_override_reason' => $sale->price_override_reason,
+            'price_tier' => $sale->price_tier,
             'buyer' => $sale->client?->entity?->name ?? $sale->buyerUnit?->name ?? $sale->walk_in_name,
             'buyer_phone' => $sale->client?->entity?->primaryContact?->phone ?? $sale->walk_in_phone,
             'buyer_type' => $sale->buyer_type,
@@ -250,6 +259,7 @@ final class SaleController extends Controller
                 'length_m' => $line->length_m !== null ? (float) $line->length_m : null,
                 'width_m' => $line->width_m !== null ? (float) $line->width_m : null,
                 'height_m' => $line->height_m !== null ? (float) $line->height_m : null,
+                'list_price' => $line->list_price !== null ? (float) $line->list_price : null,
                 'unit_price' => (float) $line->unit_price,
                 'discount_amount' => (float) $line->discount_amount,
                 'line_total' => $line->lineTotal(),

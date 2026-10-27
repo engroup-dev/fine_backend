@@ -36,13 +36,20 @@ final class SalesOrder extends Model
         'walk_in_name',
         'walk_in_phone',
         'channel',
+        'price_tier',
         'status',
         'fulfillment_status',
         'payment_method',
         'cash_account_id',
         'notes',
         'sold_by_user_id',
+        'price_override_by_user_id',
+        'price_override_reason',
         'record_version',
+    ];
+
+    protected $attributes = [
+        'price_tier' => 'retail',
     ];
 
     protected $casts = [
@@ -92,6 +99,11 @@ final class SalesOrder extends Model
     public function soldBy(): BelongsTo
     {
         return $this->belongsTo(User::class, 'sold_by_user_id');
+    }
+
+    public function priceOverrideBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'price_override_by_user_id');
     }
 
     public function creditApprovalRequest(): HasOne

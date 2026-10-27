@@ -35,6 +35,7 @@ final class Quotation extends Model
         'client_id',
         'valid_until',
         'status',
+        'price_tier',
         'gross_amount',
         'invoice_discount',
         'total_amount',
@@ -52,6 +53,7 @@ final class Quotation extends Model
 
     protected $attributes = [
         'status' => self::STATUS_OPEN,
+        'price_tier' => 'retail',
     ];
 
     protected $appends = ['effective_status'];

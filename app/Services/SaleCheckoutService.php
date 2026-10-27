@@ -48,12 +48,15 @@ final class SaleCheckoutService
 {
     private const METHODS = ['cash', 'bank', 'receivable', 'split'];
 
+    private const PRICE_TIERS = ['retail', 'wholesale'];
+
     public function __construct(
         private readonly AccountingService $accountingService,
         private readonly StockIssueService $stockIssueService,
         private readonly DocumentNumberService $documentNumbers,
         private readonly PosDayGuard $posDayGuard,
         private readonly ChequeService $chequeService,
+        private readonly PriceFloorGuard $priceFloorGuard,
     ) {}
 
     /**
@@ -97,6 +100,8 @@ final class SaleCheckoutService
      *     cash_account_id?: string|null,
      *     client_request_id?: string|null,
      *     quotation_id?: string|null,
+     *     price_tier?: string|null,
+     *     price_override?: array{login?: string|null, password?: string|null, reason?: string|null}|null,
      *     invoice_discount?: float|int|string|null,
      *     notes?: string|null,
      *     lines: array<int, array{
@@ -136,11 +141,15 @@ final class SaleCheckoutService
         [$client, $buyerUnit] = $this->resolveBuyer($unit, $data);
         $isInternal = $buyerUnit !== null;
         $isWalkIn = $client === null && $buyerUnit === null;
+        $priceTier = (string) ($data['price_tier'] ?? 'retail');
+        if (! in_array($priceTier, self::PRICE_TIERS, true)) {
+            throw new SalesRuleException('Price tier must be retail or wholesale.', 'INVALID_PRICE_TIER');
+        }
         $method = ! $isInternal ? $this->resolveMethod($client, $data['payment_method'] ?? null) : null;
         $cashAccount = in_array($method, ['cash', 'bank'], true)
             ? $this->resolveTreasury($data['cash_account_id'] ?? null, $method)
             : null;
-        $lines = $this->normalizeLines($data['lines'] ?? [], isInternal: $isInternal);
+        $lines = $this->normalizeLines($data['lines'] ?? [], isInternal: $isInternal, priceTier: $priceTier);
 
         $invoiceDiscount = round((float) ($data['invoice_discount'] ?? 0), 4);
         if ($invoiceDiscount < 0) {
@@ -185,11 +194,15 @@ final class SaleCheckoutService
             $splitPayments = $this->resolveSplitPayments($data['payments'] ?? [], $total, $client !== null);
         }
 
+        $override = ! $isInternal
+            ? $this->priceFloorGuard->verify($lines, $invoiceDiscount, $seller, $data['price_override'] ?? null)
+            : ['by_user_id' => null, 'reason' => null];
+
         $walkInName = $isWalkIn && isset($data['walk_in_name']) ? trim((string) $data['walk_in_name']) : null;
         $walkInPhone = $isWalkIn && isset($data['walk_in_phone']) ? trim((string) $data['walk_in_phone']) : null;
 
         try {
-            return DB::transaction(function () use ($unit, $data, $seller, $client, $buyerUnit, $method, $cashAccount, $lines, $gross, $invoiceDiscount, $total, $requestId, $tendered, $changeGiven, $splitPayments, $walkInName, $walkInPhone): SalesOrder {
+            return DB::transaction(function () use ($unit, $data, $seller, $client, $buyerUnit, $priceTier, $override, $method, $cashAccount, $lines, $gross, $invoiceDiscount, $total, $requestId, $tendered, $changeGiven, $splitPayments, $walkInName, $walkInPhone): SalesOrder {
                 $order = SalesOrder::create([
                     'operating_unit_id' => $unit->id,
                     'order_number' => $this->documentNumbers->next(DocumentNumberService::SALE),
@@ -205,11 +218,14 @@ final class SaleCheckoutService
                     'walk_in_name' => $walkInName !== null && $walkInName !== '' ? $walkInName : null,
                     'walk_in_phone' => $walkInPhone !== null && $walkInPhone !== '' ? $walkInPhone : null,
                     'channel' => 'pos',
+                    'price_tier' => $priceTier,
                     'status' => SalesOrderStatus::Open,
                     'payment_method' => $method,
                     'cash_account_id' => $cashAccount?->id,
                     'notes' => $data['notes'] ?? null,
                     'sold_by_user_id' => $seller->id,
+                    'price_override_by_user_id' => $override['by_user_id'],
+                    'price_override_reason' => $override['reason'],
                 ]);
 
                 foreach ($lines as $line) {
@@ -1006,7 +1022,7 @@ final class SaleCheckoutService
      * @param  array<int, array<string, mixed>>  $lines
      * @return array<int, array<string, mixed>>
      */
-    public function normalizeLines(array $lines, bool $isInternal = false): array
+    public function normalizeLines(array $lines, bool $isInternal = false, string $priceTier = 'retail'): array
     {
         if ($lines === []) {
             throw new SalesRuleException('Add at least one item or bundle to sell.', 'EMPTY_SALE');
@@ -1017,7 +1033,7 @@ final class SaleCheckoutService
         // The index is the cart order.
         ksort($lines);
 
-        return array_map(function (array $line, int $position) use ($isInternal): array {
+        return array_map(function (array $line, int $position) use ($isInternal, $priceTier): array {
             $type = $line['line_type'] ?? (! empty($line['bundle_id']) && empty($line['inventory_item_id']) ? SalesOrderLine::TYPE_BUNDLE : SalesOrderLine::TYPE_ITEM);
             $quantity = (float) ($line['quantity'] ?? 0);
             $unitPrice = (float) ($line['unit_price'] ?? 0);
@@ -1063,6 +1079,7 @@ final class SaleCheckoutService
                     'inventory_item_id' => null,
                     'stock_lot_id' => null,
                     'quantity' => $quantity,
+                    'list_price' => null,
                     'unit_price' => $unitPrice,
                     'discount_amount' => $discountAmount,
                 ];
@@ -1073,6 +1090,14 @@ final class SaleCheckoutService
             if ($item === null) {
                 throw new SalesRuleException('Every item line needs an existing inventory item.', 'ITEM_NOT_FOUND');
             }
+
+            $lengthM = isset($line['length_m']) ? (float) $line['length_m'] : null;
+            $widthM = isset($line['width_m']) ? (float) $line['width_m'] : null;
+            $heightM = isset($line['height_m']) ? (float) $line['height_m'] : null;
+
+            $listPrice = $priceTier === 'wholesale'
+                ? ($item->wholesalePriceFor(1.0, $lengthM, $widthM, $heightM) ?? $item->priceFor(1.0, $lengthM, $widthM, $heightM))
+                : $item->priceFor(1.0, $lengthM, $widthM, $heightM);
 
             return [
                 'position' => $position,
@@ -1085,6 +1110,7 @@ final class SaleCheckoutService
                 'length_m' => $line['length_m'] ?? null,
                 'width_m' => $line['width_m'] ?? null,
                 'height_m' => $line['height_m'] ?? null,
+                'list_price' => $listPrice,
                 'unit_price' => $unitPrice,
                 'discount_amount' => $discountAmount,
             ];
@@ -1122,6 +1148,7 @@ final class SaleCheckoutService
             'payments.cashAccount',
             'payments.cheque',
             'payments.receivedBy:id,name',
+            'priceOverrideBy:id,name',
         ]);
     }
 }

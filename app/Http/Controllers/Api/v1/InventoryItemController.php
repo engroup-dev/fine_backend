@@ -75,6 +75,7 @@ class InventoryItemController extends Controller
             'purchase_price' => ['nullable', 'numeric', 'min:0'],
             'selling_price' => ['nullable', 'numeric', 'min:0'],
             'wholesale_price' => ['nullable', 'numeric', 'min:0'],
+            'min_price' => ['nullable', 'numeric', 'min:0'],
             'price_basis' => ['sometimes', 'string', 'in:unit,m3'],
         ]);
 
@@ -114,6 +115,7 @@ class InventoryItemController extends Controller
             'purchase_price' => ['nullable', 'numeric', 'min:0'],
             'selling_price' => ['nullable', 'numeric', 'min:0'],
             'wholesale_price' => ['nullable', 'numeric', 'min:0'],
+            'min_price' => ['nullable', 'numeric', 'min:0'],
             'price_basis' => ['sometimes', 'string', 'in:unit,m3'],
         ]);
 
