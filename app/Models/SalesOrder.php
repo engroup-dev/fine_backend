@@ -33,6 +33,8 @@ final class SalesOrder extends Model
         'buyer_type',
         'client_id',
         'buyer_unit_id',
+        'walk_in_name',
+        'walk_in_phone',
         'channel',
         'status',
         'fulfillment_status',

@@ -415,7 +415,7 @@ test('split sale requires a registered client and refuses internal transfer', fu
 
     $internal->assertJsonPath('code', 'SPLIT_NOT_ALLOWED');
 
-    // Missing client attempt
+    // Missing client attempt with cheque portion
     $missingClient = ($this->api)()->postJson('/api/v1/sales', [
         'payment_method' => 'split',
         'lines' => [
@@ -423,7 +423,15 @@ test('split sale requires a registered client and refuses internal transfer', fu
         ],
         'payments' => [
             ['method' => 'cash', 'amount' => 50, 'cash_account_id' => $this->drawer->id],
-            ['method' => 'bank', 'amount' => 50, 'cash_account_id' => $this->bankAccount->id],
+            [
+                'method' => 'cheque',
+                'amount' => 50,
+                'cheque' => [
+                    'cheque_no' => 'CHQ-NO-CLIENT',
+                    'bank_name' => 'Aman Bank',
+                    'due_date' => '2026-12-01',
+                ],
+            ],
         ],
     ])->assertStatus(422);
 

@@ -91,6 +91,8 @@ final class SaleCheckoutService
      *     client_id?: string|null,
      *     buyer_unit_id?: string|null,
      *     buyer_warehouse_id?: string|null,
+     *     walk_in_name?: string|null,
+     *     walk_in_phone?: string|null,
      *     payment_method?: string|null,
      *     cash_account_id?: string|null,
      *     client_request_id?: string|null,
@@ -124,21 +126,23 @@ final class SaleCheckoutService
             if (! empty($data['buyer_unit_id'])) {
                 throw new SalesRuleException('Internal transfers cannot be split.', 'SPLIT_NOT_ALLOWED');
             }
-            if (empty($data['client_id'])) {
-                throw new SalesRuleException('A registered client is required for a split payment.', 'CLIENT_REQUIRED');
+            if (empty($data['client_id']) && collect($data['payments'] ?? [])->contains(fn ($p) => ($p['method'] ?? null) === 'cheque')) {
+                throw new SalesRuleException('A registered client is required for credit or cheque sales.', 'CLIENT_REQUIRED');
             }
         }
 
         [$client, $buyerUnit] = $this->resolveBuyer($unit, $data);
-        $method = $client !== null ? $this->resolveMethod($client, $data['payment_method'] ?? null) : null;
+        $isInternal = $buyerUnit !== null;
+        $isWalkIn = $client === null && $buyerUnit === null;
+        $method = ! $isInternal ? $this->resolveMethod($client, $data['payment_method'] ?? null) : null;
         $cashAccount = in_array($method, ['cash', 'bank'], true)
             ? $this->resolveTreasury($data['cash_account_id'] ?? null, $method)
             : null;
-        $lines = $this->normalizeLines($data['lines'] ?? [], isInternal: $buyerUnit !== null);
+        $lines = $this->normalizeLines($data['lines'] ?? [], isInternal: $isInternal);
 
         $total = round(array_sum(array_map(fn (array $l): float => $l['quantity'] * $l['unit_price'], $lines)), 4);
 
-        if ($client !== null && $total <= 0) {
+        if (! $isInternal && $total <= 0) {
             throw new SalesRuleException('A sale to a client must have a total above zero.', 'ZERO_TOTAL');
         }
 
@@ -158,19 +162,28 @@ final class SaleCheckoutService
 
         $splitPayments = null;
         if ($method === 'split') {
-            $splitPayments = $this->resolveSplitPayments($data['payments'] ?? [], $total);
+            $splitPayments = $this->resolveSplitPayments($data['payments'] ?? [], $total, $client !== null);
         }
 
+        $walkInName = $isWalkIn && isset($data['walk_in_name']) ? trim((string) $data['walk_in_name']) : null;
+        $walkInPhone = $isWalkIn && isset($data['walk_in_phone']) ? trim((string) $data['walk_in_phone']) : null;
+
         try {
-            return DB::transaction(function () use ($unit, $data, $seller, $client, $buyerUnit, $method, $cashAccount, $lines, $total, $requestId, $tendered, $changeGiven, $splitPayments): SalesOrder {
+            return DB::transaction(function () use ($unit, $data, $seller, $client, $buyerUnit, $method, $cashAccount, $lines, $total, $requestId, $tendered, $changeGiven, $splitPayments, $walkInName, $walkInPhone): SalesOrder {
                 $order = SalesOrder::create([
                     'operating_unit_id' => $unit->id,
                     'order_number' => $this->documentNumbers->next(DocumentNumberService::SALE),
                     'client_request_id' => $requestId,
                     'quotation_id' => $data['quotation_id'] ?? null,
-                    'buyer_type' => $client !== null ? 'client' : 'internal_unit',
+                    'buyer_type' => match (true) {
+                        $client !== null => 'client',
+                        $buyerUnit !== null => 'internal_unit',
+                        default => 'walk_in',
+                    },
                     'client_id' => $client?->id,
                     'buyer_unit_id' => $buyerUnit?->id,
+                    'walk_in_name' => $walkInName !== null && $walkInName !== '' ? $walkInName : null,
+                    'walk_in_phone' => $walkInPhone !== null && $walkInPhone !== '' ? $walkInPhone : null,
                     'channel' => 'pos',
                     'status' => SalesOrderStatus::Open,
                     'payment_method' => $method,
@@ -186,7 +199,7 @@ final class SaleCheckoutService
                 $order->total_amount = $total;
                 $order->save();
 
-                if ($method === 'receivable' && $this->exceedsCreditLimit($client, $total)) {
+                if ($method === 'receivable' && $client !== null && $this->exceedsCreditLimit($client, $total)) {
                     return $this->escalate($order, $client, $total);
                 }
 
@@ -436,7 +449,7 @@ final class SaleCheckoutService
      *     cheque: array{cheque_no?: string|null, bank_name?: string|null, drawer_name?: string|null, due_date?: string|null, is_certified?: bool|null}|null,
      * }>
      */
-    private function resolveSplitPayments(array $payments, float $total): array
+    private function resolveSplitPayments(array $payments, float $total, bool $hasClient = true): array
     {
         $paymentsCount = count($payments);
         if ($paymentsCount < 2 || $paymentsCount > 4) {
@@ -451,6 +464,10 @@ final class SaleCheckoutService
             $portionMethod = $portion['method'] ?? null;
             if (! in_array($portionMethod, ['cash', 'bank', 'cheque'], true)) {
                 throw new SalesRuleException('A split payment portion must be cash, bank, or cheque.', 'PAYMENT_METHOD_REQUIRED');
+            }
+
+            if ($portionMethod === 'cheque' && ! $hasClient) {
+                throw new SalesRuleException('A registered client is required for credit or cheque sales.', 'CLIENT_REQUIRED');
             }
 
             $portionAmount = round((float) ($portion['amount'] ?? 0), 4);
@@ -808,6 +825,9 @@ final class SaleCheckoutService
     }
 
     /**
+     * Resolve the sale's buyer: a registered client, another operating unit, or
+     * an anonymous POS walk-in when neither is sent (FR-INV-003, decision #7).
+     *
      * @param  array<string, mixed>  $data
      * @return array{0: Client|null, 1: OperatingUnit|null}
      */
@@ -816,11 +836,15 @@ final class SaleCheckoutService
         $clientId = $data['client_id'] ?? null;
         $buyerUnitId = $data['buyer_unit_id'] ?? null;
 
-        if (($clientId === null) === ($buyerUnitId === null)) {
+        if ($clientId !== null && $buyerUnitId !== null) {
             throw new SalesRuleException(
                 'Choose one buyer: a registered client or another operating unit.',
                 'BUYER_REQUIRED',
             );
+        }
+
+        if ($clientId === null && $buyerUnitId === null) {
+            return [null, null];
         }
 
         if ($buyerUnitId !== null) {
@@ -845,8 +869,28 @@ final class SaleCheckoutService
         return [$client, null];
     }
 
-    private function resolveMethod(Client $client, ?string $method): string
+    /**
+     * Walk-in customers must pay in full now by cash, bank, or a cash/bank
+     * split; credit (receivable) and cheque sales require a registered client
+     * (FR-INV-003, decision #7).
+     */
+    private function resolveMethod(?Client $client, ?string $method): string
     {
+        if ($client === null) {
+            if (in_array($method, ['receivable', 'cheque'], true)) {
+                throw new SalesRuleException(
+                    'A registered client is required for credit or cheque sales.',
+                    'CLIENT_REQUIRED',
+                );
+            }
+
+            if (! in_array($method, ['cash', 'bank', 'split'], true)) {
+                throw new SalesRuleException('Choose how the customer pays: cash, bank or split.', 'PAYMENT_METHOD_REQUIRED');
+            }
+
+            return $method;
+        }
+
         if (! in_array($method, self::METHODS, true)) {
             throw new SalesRuleException('Choose how the client pays: cash, bank or receivable.', 'PAYMENT_METHOD_REQUIRED');
         }

@@ -45,6 +45,8 @@ final class SaleController extends Controller
             $search = (string) $request->query('search');
             $query->where(function ($q) use ($search): void {
                 $q->where('order_number', 'like', "%{$search}%")
+                    ->orWhere('walk_in_name', 'like', "%{$search}%")
+                    ->orWhere('walk_in_phone', 'like', "%{$search}%")
                     ->orWhereHas('client.entity', fn ($e) => $e->where('name', 'like', "%{$search}%"));
             });
         }
@@ -71,7 +73,9 @@ final class SaleController extends Controller
             'client_id' => ['nullable', 'uuid'],
             'buyer_unit_id' => ['nullable', 'uuid', 'exists:operating_units,id'],
             'buyer_warehouse_id' => ['nullable', 'uuid', 'exists:warehouses,id'],
-            'payment_method' => ['nullable', Rule::in(['cash', 'bank', 'receivable', 'split'])],
+            'walk_in_name' => ['nullable', 'string', 'max:100'],
+            'walk_in_phone' => ['nullable', 'string', 'max:30'],
+            'payment_method' => ['nullable', Rule::in(['cash', 'bank', 'receivable', 'split', 'cheque'])],
             'cash_account_id' => ['nullable', 'uuid'],
             'tendered_amount' => ['nullable', 'numeric', 'min:0'],
             'notes' => ['nullable', 'string'],
@@ -231,8 +235,8 @@ final class SaleController extends Controller
             'date' => $sale->created_at?->toIso8601String(),
             'seller' => $sale->operatingUnit?->name,
             'sold_by' => $sale->soldBy?->name,
-            'buyer' => $sale->client?->entity?->name ?? $sale->buyerUnit?->name,
-            'buyer_phone' => $sale->client?->entity?->primaryContact?->phone,
+            'buyer' => $sale->client?->entity?->name ?? $sale->buyerUnit?->name ?? $sale->walk_in_name,
+            'buyer_phone' => $sale->client?->entity?->primaryContact?->phone ?? $sale->walk_in_phone,
             'buyer_type' => $sale->buyer_type,
             'payment_method' => $sale->payment_method,
             'cash_account' => $sale->cashAccount?->name,

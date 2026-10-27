@@ -279,8 +279,8 @@ class PosController extends Controller
     }
 
     /**
-     * Client sales that actually happened in the window (not ones waiting on,
-     * or refused, credit approval; not internal transfers).
+     * Client and walk-in sales that actually happened in the window (not ones
+     * waiting on, or refused, credit approval; not internal transfers).
      *
      * @return Collection<int, SalesOrder>
      */
@@ -289,7 +289,7 @@ class PosController extends Controller
         $unitId = $this->unitContext->getUnitId();
 
         $query = SalesOrder::where('channel', 'pos')
-            ->where('buyer_type', 'client')
+            ->whereIn('buyer_type', ['client', 'walk_in'])
             ->whereNotIn('status', ['pending_approval', 'rejected'])
             ->whereBetween('created_at', [$start, $end]);
 
