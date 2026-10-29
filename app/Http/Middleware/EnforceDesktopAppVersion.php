@@ -49,7 +49,7 @@ final class EnforceDesktopAppVersion
                 'current_version' => $clientVersion ?? 'unknown',
                 'required_version' => $minVersion,
                 'latest_version' => $latestVersion,
-                'update_url' => config('app.desktop_update_url', 'https://github.com/NoraldenElhouni/fine-desktop/releases/latest'),
+                'update_url' => config('app.desktop_update_url', 'https://github.com/engroup-dev/fine-erp/releases/latest'),
             ], 426);
         }
 

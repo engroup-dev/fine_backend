@@ -4,7 +4,7 @@ Guidance for Claude Code in this repository. Read `../HANDOFF.md` first — it i
 
 ## What this is
 
-Laravel 13 / PHP 8.4 API ("fine_backend", SQLite in dev) for **Fine** — a five-unit foam-to-furniture manufacturer ERP. All ten phases are built: foundation/RBAC, procurement+treasury, inventory, foam, cutter, furniture, sales/POS, full accounting (ledger, landed cost/FX, overhead, fixed assets), HR/payroll, owner dashboard. The desktop client is the sibling `fine-desktop` repo (different GitHub account: the engroup-dev org here, NoraldenElhouni there).
+Laravel 13 / PHP 8.4 API ("fine_backend", SQLite in dev) for **Fine** — a five-unit foam-to-furniture manufacturer ERP. All ten phases are built: foundation/RBAC, procurement+treasury, inventory, foam, cutter, furniture, sales/POS, full accounting (ledger, landed cost/FX, overhead, fixed assets), HR/payroll, owner dashboard. The desktop client is the sibling `fine-desktop` repo (`engroup-dev/fine-erp`; both repos are in the engroup-dev GitHub org).
 
 **Architecture is online-only** (offline-sync removed 2026-08-04). `SyncService`/`SyncConflict` are dead remnants — do not build on them.
 
