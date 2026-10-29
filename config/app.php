@@ -15,7 +15,7 @@ return [
 
     'name' => env('APP_NAME', 'Laravel'),
 
-    'version' => env('APP_VERSION', '1.7.0'),
+    'version' => env('APP_VERSION', '1.8.0'),
 
     'min_desktop_version' => env('APP_MIN_DESKTOP_VERSION', null),
 
@@ -23,7 +23,7 @@ return [
 
     'auto_enforce_latest_build' => (bool) env('APP_AUTO_ENFORCE_LATEST_BUILD', true),
 
-    'desktop_update_url' => env('APP_DESKTOP_UPDATE_URL', 'https://github.com/NoraldenElhouni/fine-desktop/releases/latest'),
+    'desktop_update_url' => env('APP_DESKTOP_UPDATE_URL', 'https://github.com/engroup-dev/fine-erp/releases/latest'),
 
     /*
     |--------------------------------------------------------------------------

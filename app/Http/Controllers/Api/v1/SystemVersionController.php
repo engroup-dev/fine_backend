@@ -58,7 +58,7 @@ final class SystemVersionController extends Controller
             'min_desktop_version' => $minVersion ?: null,
             'latest_desktop_version' => $latestVersion ?: null,
             'is_update_required' => $isUpdateRequired,
-            'update_url' => config('app.desktop_update_url', 'https://github.com/NoraldenElhouni/fine-desktop/releases/latest'),
+            'update_url' => config('app.desktop_update_url', 'https://github.com/engroup-dev/fine-erp/releases/latest'),
         ], 201);
     }
 
@@ -87,7 +87,7 @@ final class SystemVersionController extends Controller
             'min_desktop_version' => $minVersion ?: null,
             'latest_desktop_version' => $latestVersion ?: null,
             'is_update_required' => (bool) $isUpdateRequired,
-            'update_url' => config('app.desktop_update_url', 'https://github.com/NoraldenElhouni/fine-desktop/releases/latest'),
+            'update_url' => config('app.desktop_update_url', 'https://github.com/engroup-dev/fine-erp/releases/latest'),
         ]);
     }
 
