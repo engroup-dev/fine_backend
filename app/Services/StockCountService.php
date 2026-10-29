@@ -12,6 +12,7 @@ use App\Exceptions\LedgerRuleException;
 use App\Models\InventoryItem;
 use App\Models\InventoryMovement;
 use App\Models\ItemCategory;
+use App\Models\ItemStockLevel;
 use App\Models\JournalEntry;
 use App\Models\OperatingUnit;
 use App\Models\StockCount;
@@ -534,7 +535,7 @@ final class StockCountService
             'approvedBy:id,name',
             'journalEntry:id,reference,entry_date',
             'lines.inventoryItem:id,name,code,item_type,unit_of_measure',
-            'lines.stockLot:id,lot_number,status,grade',
+            'lines.stockLot:id,lot_number,bin_location,status,grade',
             'lines.newStockLot:id,lot_number',
         ]);
 
@@ -610,6 +611,7 @@ final class StockCountService
                 'item_name' => $line['item_name'],
                 'unit_of_measure' => $line['unit_of_measure'],
                 'lot_number' => $line['lot_number'],
+                'bin_location' => $line['bin_location'],
                 'is_found' => $line['is_found'],
                 'system_qty' => $line['system_qty'],
                 'counted_qty' => $line['counted_qty'],
@@ -637,6 +639,7 @@ final class StockCountService
             'item_type' => $line->inventoryItem?->item_type,
             'unit_of_measure' => $line->inventoryItem?->unit_of_measure,
             'lot_number' => $line->stockLot?->lot_number,
+            'bin_location' => $line->stockLot?->bin_location,
             'lot_status' => $line->stockLot?->status,
             'grade' => $line->stockLot?->grade,
             'is_found' => $line->isFound(),
@@ -981,6 +984,8 @@ final class StockCountService
             'quantity' => round((float) $line->counted_qty, 4),
             'unit_cost' => round((float) $line->unit_cost, 4),
             'status' => 'available',
+            // W4-02: found stock lands on the item's bin in that warehouse.
+            'bin_location' => ItemStockLevel::binFor($item->id, $count->warehouse_id),
         ]);
         $lot->setRelation('inventoryItem', $item);
 

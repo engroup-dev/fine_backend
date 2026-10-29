@@ -30,6 +30,7 @@ final class DashboardService
     public function __construct(
         private readonly FinancialReportService $reports,
         private readonly InventoryValuationService $valuation,
+        private readonly StockLevelService $stockLevels,
     ) {}
 
     /**
@@ -67,6 +68,8 @@ final class DashboardService
             'cash_position' => $this->cashPosition(),
             'fx_exposure' => $exposure,
             'pending_approvals' => $this->pendingCounts(),
+            // W4-02: warehouse/item pairs at or below their minimum.
+            'low_stock_count' => $this->stockLevels->lowStockCount(),
         ];
     }
 

@@ -8,6 +8,7 @@ use App\Models\FiscalPeriod;
 use App\Models\InventoryItem;
 use App\Models\InventoryMovement;
 use App\Models\ItemCategory;
+use App\Models\ItemStockLevel;
 use App\Models\JournalEntry;
 use App\Models\JournalLine;
 use App\Models\OperatingUnit;
@@ -202,6 +203,11 @@ test('found stock is costed from the newest lot of the item in the warehouse', f
     $this->travel(1)->minutes();
     $newer = ($this->lot)($this->sofa, 1, 120, 'consumed');
     $newer->update(['quantity' => 0]);
+    // W4-02: the found lot takes the item's bin in the warehouse.
+    ItemStockLevel::create([
+        'inventory_item_id' => $this->sofa->id, 'warehouse_id' => $this->warehouse->id,
+        'min_qty' => 0, 'max_qty' => 0, 'reorder_qty' => 0, 'bin_location' => 'A-03',
+    ]);
 
     $count = ($this->open)();
     ($this->enter)($count, [['id' => ($this->lineFor)($count, $older->id)['id'], 'counted_qty' => 1]])->assertOk();
@@ -225,6 +231,7 @@ test('found stock is costed from the newest lot of the item in the warehouse', f
         ->and((float) $newLot->unit_cost)->toBe(120.0)
         ->and($newLot->warehouse_id)->toBe($this->warehouse->id)
         ->and($newLot->status)->toBe('available')
+        ->and($newLot->bin_location)->toBe('A-03')
         ->and(InventoryMovement::where('stock_lot_id', $newLot->id)->where('movement_type', 'adjustment')->sum('quantity_delta'))->toEqual(2)
         ->and(($this->sum)($count['id'], '1134', 'debit'))->toBe(240.0)
         ->and(($this->sum)($count['id'], '45', 'credit'))->toBe(240.0);

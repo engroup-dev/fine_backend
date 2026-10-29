@@ -498,6 +498,8 @@ final class BundleFulfillmentService
         $reserved = StockLot::create([
             'inventory_item_id' => $lot->inventory_item_id,
             'warehouse_id' => $lot->warehouse_id,
+            // Same shelf: the reserved part never leaves the warehouse (W4-02).
+            'bin_location' => $lot->bin_location,
             'lot_number' => $lot->lot_number.'-R'.($splits + 1),
             'quantity' => $quantity,
             'unit_cost' => $lot->unit_cost,

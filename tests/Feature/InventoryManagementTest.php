@@ -154,6 +154,7 @@ test('cutter operator can process cut remnant by restocking remnant block with n
         'inventory_item_id' => $item->id,
         'warehouse_id' => $this->warehouse->id,
         'lot_number' => 'LOT-CUT-PARENT-01',
+        'bin_location' => 'CUT-3',
         'quantity' => 1.0,
         'length_m' => 2.0,
         'width_m' => 2.0,
@@ -178,7 +179,8 @@ test('cutter operator can process cut remnant by restocking remnant block with n
     $response->assertStatus(200)
         ->assertJsonPath('parent_lot.status', 'consumed')
         ->assertJsonPath('remnant_lot.length_m', '1.200')
-        ->assertJsonPath('remnant_lot.volume_m3', '2.4000');
+        ->assertJsonPath('remnant_lot.volume_m3', '2.4000')
+        ->assertJsonPath('remnant_lot.bin_location', 'CUT-3');
 
     $parentLot->refresh();
     expect($parentLot->status)->toBe('consumed');

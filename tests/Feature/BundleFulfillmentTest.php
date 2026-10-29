@@ -167,6 +167,7 @@ test('setting stock aside must cover the piece, reserves whole pieces and splits
     $roll = StockLot::create([
         'inventory_item_id' => $this->fabric->id, 'warehouse_id' => $this->storeWarehouse->id,
         'lot_number' => 'FAB-ROLL', 'quantity' => 50, 'unit_cost' => 10, 'status' => 'available',
+        'bin_location' => 'F-02',
     ]);
 
     $sale = ($this->sell)();
@@ -193,6 +194,7 @@ test('setting stock aside must cover the piece, reserves whole pieces and splits
         ->and($roll->fresh()->status)->toBe('available')
         ->and((float) $split->quantity)->toBe(12.0)
         ->and($split->status)->toBe('reserved')
+        ->and($split->bin_location)->toBe('F-02') // split in place: same shelf
         ->and(InventoryMovement::where('reason', 'reserve_for_sale')->sum('quantity_delta'))->toEqual(0);
 });
 

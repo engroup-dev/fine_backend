@@ -17,6 +17,7 @@ use App\Models\FixedAsset;
 use App\Models\InternalRestockRequest;
 use App\Models\InventoryItem;
 use App\Models\ItemCategory;
+use App\Models\ItemStockLevel;
 use App\Models\JournalEntry;
 use App\Models\MaterialRequest;
 use App\Models\OperatingUnit;
@@ -90,6 +91,7 @@ class AppServiceProvider extends ServiceProvider
         ItemCategory::observe(AuditObserver::class);
         Bundle::observe(AuditObserver::class);
         StockLot::observe(AuditObserver::class);
+        ItemStockLevel::observe(AuditObserver::class);
         WarehouseTransfer::observe(AuditObserver::class);
         ProductionBatch::observe(AuditObserver::class);
 

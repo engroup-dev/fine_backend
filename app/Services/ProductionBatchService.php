@@ -7,6 +7,7 @@ namespace App\Services;
 use App\Enums\ProductionBatchStatus;
 use App\Exceptions\InvalidStateTransitionException;
 use App\Models\InventoryMovement;
+use App\Models\ItemStockLevel;
 use App\Models\MaterialRequest;
 use App\Models\ProductionBatch;
 use App\Models\Scopes\OperatingUnitScope;
@@ -290,6 +291,8 @@ class ProductionBatchService
                 $unitVolume = round($length * $width * $height, 4);
                 $kind = $group['kind'] ?? 'block';
                 $blockType = $group['block_type'] ?? (in_array($kind, ['separator', 'head', 'scrap'], true) ? $kind : 'block');
+                // W4-02: output lands on the item's bin in that warehouse, if one is set.
+                $bin = ItemStockLevel::binFor($group['inventory_item_id'], $group['warehouse_id']);
 
                 if ($blockType === 'scrap' || $kind === 'scrap') {
                     $groupVolume = round($unitVolume * $count, 4);
@@ -314,6 +317,7 @@ class ProductionBatchService
                         'unit_cost' => 0,
                         'block_type' => 'scrap',
                         'status' => 'available',
+                        'bin_location' => $bin,
                     ]);
 
                     InventoryMovement::create([
@@ -362,6 +366,7 @@ class ProductionBatchService
                         'grade' => $group['grade'] ?? 'standard',
                         'status' => 'available',
                         'attribute_values' => isset($group['color']) ? ['color' => $group['color']] : null,
+                        'bin_location' => $bin,
                     ]);
 
                     // INV-06: stock only ever appears through a movement, so the

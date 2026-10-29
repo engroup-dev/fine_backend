@@ -22,6 +22,7 @@ class StockLot extends Model
     protected $fillable = [
         'inventory_item_id',
         'warehouse_id',
+        'bin_location',
         'lot_number',
         'sequence_in_batch',
         'pressure',

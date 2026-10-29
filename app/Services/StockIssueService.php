@@ -7,6 +7,7 @@ namespace App\Services;
 use App\Exceptions\InsufficientComponentStockException;
 use App\Exceptions\SalesRuleException;
 use App\Models\InventoryMovement;
+use App\Models\ItemStockLevel;
 use App\Models\StockLot;
 use App\Models\Warehouse;
 
@@ -170,7 +171,8 @@ final class StockIssueService
      * Land drawn portions in another unit at the cost they left with, one new
      * lot per portion so size and grade travel with the goods. The prefix must
      * be unique per document line (e.g. TRF-S-2026-00001-L2); portions are
-     * numbered after it.
+     * numbered after it. Each lot takes the item's bin in the receiving
+     * warehouse (W4-02).
      *
      * @param  array<int, array{lot: StockLot, quantity: float, unit_cost: float}>  $portions
      * @return array<int, StockLot>
@@ -193,6 +195,7 @@ final class StockIssueService
             $received = StockLot::create([
                 'inventory_item_id' => $source->inventory_item_id,
                 'warehouse_id' => $warehouse->id,
+                'bin_location' => ItemStockLevel::binFor($source->inventory_item_id, $warehouse->id),
                 'lot_number' => $lotPrefix.'-'.($index + 1),
                 'quantity' => $portion['quantity'],
                 'unit_cost' => $portion['unit_cost'],

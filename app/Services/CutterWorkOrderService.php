@@ -15,6 +15,7 @@ use App\Models\CutterWorkOrderLine;
 use App\Models\FoamBlockConsumption;
 use App\Models\InventoryItem;
 use App\Models\InventoryMovement;
+use App\Models\ItemStockLevel;
 use App\Models\MaterialRequest;
 use App\Models\OperatingUnit;
 use App\Models\SaleBundleComponent;
@@ -486,6 +487,7 @@ class CutterWorkOrderService
                     'weight_kg' => $weightKg,
                     'unit_cost' => $weightKg > 0 ? round($remainderCost / $weightKg, 4) : 0,
                     'status' => 'available',
+                    'bin_location' => ItemStockLevel::binFor($byproductItemId, $warehouseId),
                 ]);
 
                 // Movement 2 of 3: byproduct fill enters cutter inventory.
@@ -723,6 +725,8 @@ class CutterWorkOrderService
                 : $pieceCost * ($line->quantity / $totalPieces);
             $costPerPiece = round($lineShare / $line->quantity, 4);
             $component = $line->saleComponent;
+            // W4-02: pieces land on the output item's bin in that warehouse.
+            $pieceBin = ItemStockLevel::binFor($line->output_inventory_item_id, $warehouseId);
 
             for ($i = 1; $i <= $line->quantity; $i++) {
                 $created++;
@@ -749,6 +753,7 @@ class CutterWorkOrderService
                     'source_block_length_m' => $firstBlock?->length_m_snapshot,
                     'source_block_width_m' => $firstBlock?->width_m_snapshot,
                     'source_block_height_m' => $firstBlock?->height_m_snapshot,
+                    'bin_location' => $pieceBin,
                 ]);
 
                 // Movement 3 of 3: the cut piece enters cutter inventory.

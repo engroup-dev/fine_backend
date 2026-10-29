@@ -31,6 +31,7 @@ use App\Http\Controllers\Api\v1\InventoryItemController;
 use App\Http\Controllers\Api\v1\InventoryMovementController;
 use App\Http\Controllers\Api\v1\InventoryValuationController;
 use App\Http\Controllers\Api\v1\ItemCategoryController;
+use App\Http\Controllers\Api\v1\ItemStockLevelController;
 use App\Http\Controllers\Api\v1\JournalEntryController;
 use App\Http\Controllers\Api\v1\LaborRoleRateController;
 use App\Http\Controllers\Api\v1\LandedCostLineController;
@@ -404,6 +405,9 @@ Route::prefix('v1')->group(function () {
                 Route::get('/inventory/valuation', [InventoryValuationController::class, 'index']);
                 Route::get('/inventory/valuation/rollup', [InventoryValuationController::class, 'rollup']);
                 Route::get('/warehouses/{id}/stock-summary', [WarehouseController::class, 'stockSummary']);
+                // W4-02: reorder levels and bins per item per warehouse, and the reorder report.
+                Route::apiResource('item-stock-levels', ItemStockLevelController::class);
+                Route::get('/inventory/reorder-report', [ItemStockLevelController::class, 'reorderReport']);
                 Route::apiResource('warehouses', WarehouseController::class);
                 Route::apiResource('warehouse-transfers', WarehouseTransferController::class)->except(['destroy']);
                 Route::post('/warehouse-transfers/{id}/complete', [WarehouseTransferController::class, 'complete']);

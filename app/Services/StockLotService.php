@@ -8,6 +8,7 @@ use App\Exceptions\InsufficientComponentStockException;
 use App\Exceptions\LedgerRuleException;
 use App\Models\InventoryItem;
 use App\Models\InventoryMovement;
+use App\Models\ItemStockLevel;
 use App\Models\PurchaseOrder;
 use App\Models\StockLot;
 use App\Models\Warehouse;
@@ -39,7 +40,10 @@ class StockLotService
      *   import_receipt   no journal — PurchaseOrder.Complete already posts the
      *                    landed value; this only materialises the physical lots
      *
-     * @param array{inventory_item_id: string, warehouse_id: string, lot_number?: string|null,
+     * The lot's bin is the one given, else the item's bin in that warehouse
+     * (W4-02, FR-STK-004).
+     *
+     * @param array{inventory_item_id: string, warehouse_id: string, lot_number?: string|null, bin_location?: string|null,
      *     quantity: float, unit_cost: float, source: string, purchase_order_id?: string|null,
      *     cash_account_id?: string|null,
      *     attribute_values?: array<string, mixed>|null} $data
@@ -85,9 +89,12 @@ class StockLotService
                 $attributeValues['container_capacity'] = round($capacity, 4);
             }
 
+            $bin = trim((string) ($data['bin_location'] ?? ''));
+
             $lot = StockLot::create([
                 'inventory_item_id' => $item->id,
                 'warehouse_id' => $warehouse->id,
+                'bin_location' => $bin !== '' ? $bin : ItemStockLevel::binFor($item->id, $warehouse->id),
                 'lot_number' => $lotNumber,
                 'quantity' => round((float) $data['quantity'], 4),
                 'container_quantity' => $containerQuantity,
@@ -199,6 +206,11 @@ class StockLotService
 
         if (isset($filters['block_type']) && filled($filters['block_type'])) {
             $query->where('block_type', $filters['block_type']);
+        }
+
+        // W4-02: find lots by shelf (partial match).
+        if (isset($filters['bin_location']) && filled($filters['bin_location'])) {
+            $query->where('bin_location', 'like', '%'.$filters['bin_location'].'%');
         }
 
         // Apply dynamic JSON attribute filters: ?attrs[pressure_kpa][gte]=35
@@ -317,6 +329,8 @@ class StockLotService
                 $emptyLot = StockLot::create([
                     'inventory_item_id' => $item->empty_container_item_id,
                     'warehouse_id' => $locked->warehouse_id,
+                    // A different item: it takes its own bin here, if set (W4-02).
+                    'bin_location' => ItemStockLevel::binFor($item->empty_container_item_id, $locked->warehouse_id),
                     'lot_number' => 'EMPTY-'.$locked->lot_number.'-'.now()->format('YmdHis').'-'.$emptied,
                     'quantity' => $emptied,
                     'container_quantity' => $emptied,
@@ -448,6 +462,8 @@ class StockLotService
                 $remnantLot = StockLot::create([
                     'inventory_item_id' => $parentLot->inventory_item_id,
                     'warehouse_id' => $parentLot->warehouse_id,
+                    // The remnant goes back on the parent's shelf (W4-02).
+                    'bin_location' => $parentLot->bin_location,
                     'lot_number' => $parentLot->lot_number.'-R'.$revision,
                     'remnant_of_lot_id' => $parentLot->id,
                     'pressure' => $parentLot->pressure,
@@ -512,6 +528,7 @@ class StockLotService
      * `SalesOrderService::drawFromUnit`), splitting each lot drawn into a new
      * lot in the destination warehouse so per-lot cost/grade/dimensions are
      * preserved. Purely a physical move within one unit — no ledger entry.
+     * Each new lot takes the item's bin in the destination (W4-02).
      *
      * @return array{transferred_quantity: float, lots: array<int, StockLot>}
      */
@@ -558,6 +575,7 @@ class StockLotService
 
             $remaining = $quantity;
             $newLots = [];
+            $destinationBin = ItemStockLevel::binFor($item->id, $toWarehouse->id);
 
             foreach ($lots as $lot) {
                 if ($remaining <= 0) {
@@ -592,6 +610,7 @@ class StockLotService
                 $newLot = StockLot::create([
                     'inventory_item_id' => $item->id,
                     'warehouse_id' => $toWarehouse->id,
+                    'bin_location' => $destinationBin,
                     'lot_number' => $lotNumber,
                     'quantity' => $take,
                     'length_m' => $lot->length_m,

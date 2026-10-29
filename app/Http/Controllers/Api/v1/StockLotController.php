@@ -21,7 +21,7 @@ class StockLotController extends Controller
     {
         $filters = $request->only([
             'status', 'grade', 'warehouse_id', 'category_id',
-            'production_batch_id', 'inventory_item_id', 'attrs', 'block_type',
+            'production_batch_id', 'inventory_item_id', 'attrs', 'block_type', 'bin_location',
         ]);
         $perPage = $request->integer('per_page', 15);
 
@@ -75,6 +75,7 @@ class StockLotController extends Controller
             'inventory_item_id' => ['required', 'uuid', 'exists:inventory_items,id'],
             'warehouse_id' => ['required', 'uuid', new ExistsInCurrentUnit(Warehouse::class, 'warehouse')],
             'lot_number' => ['nullable', 'string', 'max:255'],
+            'bin_location' => ['nullable', 'string', 'max:50'],
             'quantity' => ['required', 'numeric', 'min:0.0001'],
             'container_quantity' => ['nullable', 'numeric', 'min:0'],
             'container_capacity' => ['nullable', 'numeric', 'gt:0'],
@@ -118,6 +119,7 @@ class StockLotController extends Controller
             'grade' => ['sometimes', 'string', 'in:standard,acceptable_variant,defective_usable,reject'],
             'status' => ['sometimes', 'string', 'in:available,reserved,consumed,quarantined'],
             'attribute_values' => ['nullable', 'array'],
+            'bin_location' => ['sometimes', 'nullable', 'string', 'max:50'],
             'record_version' => ['required', 'integer'],
         ], [
             'warehouse_id.prohibited' => 'Moving a lot to another warehouse must go through the transfer endpoint, so an inventory movement is recorded.',
@@ -126,6 +128,10 @@ class StockLotController extends Controller
         ]);
 
         $this->ensureStatusChangeAllowed($stockLot, $validated['status'] ?? null);
+
+        if (array_key_exists('bin_location', $validated)) {
+            $validated['bin_location'] = filled($validated['bin_location']) ? trim((string) $validated['bin_location']) : null;
+        }
 
         $stockLot->update($validated);
 
