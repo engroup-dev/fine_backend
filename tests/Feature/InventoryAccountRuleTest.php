@@ -365,7 +365,11 @@ test('a block attached to a cutter order stays out of the lots even when its sta
     $block = ($this->intake)($this->foam, 1, 300);
     $order = CutterWorkOrder::create(['operating_unit_id' => $this->unitA->id, 'order_number' => 'CW-FLIP', 'status' => 'confirmed']);
     app(CutterWorkOrderService::class)->attachBlock($order, $block);
-    ($this->api)()->patchJson("/api/v1/stock-lots/{$block->id}", ['status' => 'available', 'record_version' => $block->fresh()->record_version])->assertOk();
+    // The stock-lot update endpoint refuses reserved -> available since W4-01; data
+    // flipped through it before then is what this guards against.
+    ($this->api)()->patchJson("/api/v1/stock-lots/{$block->id}", ['status' => 'available', 'record_version' => $block->fresh()->record_version])
+        ->assertStatus(422)->assertJsonPath('code', 'LOT_STATUS_CHANGE_NOT_ALLOWED');
+    $block->refresh()->update(['status' => 'available']);
     $entries = JournalEntry::count();
 
     $this->artisan('inventory:reconcile-accounts', ['--post' => true])

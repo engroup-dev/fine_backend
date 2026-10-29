@@ -628,6 +628,10 @@ class StockLotService
         });
     }
 
+    /**
+     * Lot numbers are unique across every unit (and soft-deleted lots keep
+     * theirs), so the probes skip the unit scope and SoftDeletes alike.
+     */
     public function generateUniqueLotNumber(InventoryItem $item, string $source, ?string $purchaseOrderId = null): string
     {
         $skuPart = preg_replace('/[^A-Za-z0-9_-]/', '', (string) $item->code) ?: 'ITEM';
@@ -643,7 +647,7 @@ class StockLotService
 
         $candidate = "{$base}-01";
         $seq = 1;
-        while (StockLot::withTrashed()->where('lot_number', $candidate)->exists()) {
+        while (StockLot::withoutGlobalScopes()->where('lot_number', $candidate)->exists()) {
             $seq++;
             $candidate = sprintf('%s-%02d', $base, $seq);
         }
@@ -661,14 +665,14 @@ class StockLotService
             return [$this->generateUniqueLotNumber($item ?? new InventoryItem, 'default'), null];
         }
 
-        if (! StockLot::withTrashed()->where('lot_number', $raw)->exists()) {
+        if (! StockLot::withoutGlobalScopes()->where('lot_number', $raw)->exists()) {
             return [$raw, null];
         }
 
         // Collision: auto-suffix and preserve original vendor lot
         $seq = 1;
         $candidate = sprintf('%s-%02d', $raw, $seq);
-        while (StockLot::withTrashed()->where('lot_number', $candidate)->exists()) {
+        while (StockLot::withoutGlobalScopes()->where('lot_number', $candidate)->exists()) {
             $seq++;
             $candidate = sprintf('%s-%02d', $raw, $seq);
         }

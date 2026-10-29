@@ -118,7 +118,7 @@ test('authenticated user can create a work order with explicit fields', function
     ]);
 });
 
-test('authenticated user can complete a work order atomically', function () {
+test('the work-order complete back door is gone and writes no movement (W4-01)', function () {
     $order = WorkOrder::create([
         'id' => (string) Str::uuid(),
         'operating_unit_id' => $this->unit->id,
@@ -127,34 +127,14 @@ test('authenticated user can complete a work order atomically', function () {
         'status' => 'open',
     ]);
 
-    $response = $this->actingAs($this->user)
+    $this->actingAs($this->user)
         ->withHeader('X-Operating-Unit-ID', $this->unit->id)
         ->postJson("/api/v1/work-orders/{$order->id}/complete", [
             'consumedSku' => 'RAW-MATERIAL-Y',
             'consumedQty' => 100,
-        ]);
+        ])
+        ->assertNotFound();
 
-    $response->assertStatus(200)
-        ->assertJsonFragment(['status' => 'completed']);
-
-    $this->assertDatabaseHas('work_orders', [
-        'id' => $order->id,
-        'status' => 'completed',
-    ]);
-
-    // Raw material consumption
-    $this->assertDatabaseHas('inventory_movements', [
-        'operating_unit_id' => $this->unit->id,
-        'sku' => 'RAW-MATERIAL-Y',
-        'quantity_delta' => -100,
-        'reference_id' => $order->id,
-    ]);
-
-    // Finished product output
-    $this->assertDatabaseHas('inventory_movements', [
-        'operating_unit_id' => $this->unit->id,
-        'sku' => 'WIDGET-FINISHED',
-        'quantity_delta' => 50,
-        'reference_id' => $order->id,
-    ]);
+    expect($order->fresh()->status)->toBe('open');
+    $this->assertDatabaseCount('inventory_movements', 0);
 });

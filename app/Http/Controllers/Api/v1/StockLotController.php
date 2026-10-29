@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api\v1;
 
+use App\Exceptions\LedgerRuleException;
 use App\Http\Controllers\Controller;
 use App\Models\StockLot;
 use App\Models\Warehouse;
@@ -124,9 +125,36 @@ class StockLotController extends Controller
             'unit_cost.prohibited' => 'Stock unit cost cannot be modified directly via update.',
         ]);
 
+        $this->ensureStatusChangeAllowed($stockLot, $validated['status'] ?? null);
+
         $stockLot->update($validated);
 
         return response()->json($stockLot->load(['inventoryItem.category', 'warehouse']));
+    }
+
+    /**
+     * INV-06 (W4-01): a lot's status may only move between available and
+     * quarantined here. Reserving, consuming or releasing a lot moves stock
+     * or value, so it happens only in the flows that record a movement and
+     * post the journal (cutter orders, sales, stock counts).
+     *
+     * @throws LedgerRuleException
+     */
+    private function ensureStatusChangeAllowed(StockLot $stockLot, ?string $status): void
+    {
+        if ($status === null || $status === $stockLot->status) {
+            return;
+        }
+
+        $editable = ['available', 'quarantined'];
+
+        if (! in_array($stockLot->status, $editable, true) || ! in_array($status, $editable, true)) {
+            throw new LedgerRuleException(
+                "A lot's status can only be switched between available and quarantined here; {$stockLot->status} → {$status} must go through its own flow.",
+                'LOT_STATUS_CHANGE_NOT_ALLOWED',
+                ['from' => $stockLot->status, 'to' => $status],
+            );
+        }
     }
 
     public function processCutRemnant(Request $request, string $id): JsonResponse

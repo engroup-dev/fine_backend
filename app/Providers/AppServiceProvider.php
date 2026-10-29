@@ -30,6 +30,8 @@ use App\Models\Role;
 use App\Models\SalesOrder;
 use App\Models\SalesReturn;
 use App\Models\SalesReturnLine;
+use App\Models\StockCount;
+use App\Models\StockCountLine;
 use App\Models\StockLot;
 use App\Models\TreasuryTransfer;
 use App\Models\TreasuryVoucher;
@@ -121,6 +123,8 @@ class AppServiceProvider extends ServiceProvider
         SalesReturn::observe(AuditObserver::class);
         SalesReturnLine::observe(AuditObserver::class);
         PosShift::observe(AuditObserver::class);
+        StockCount::observe(AuditObserver::class);
+        StockCountLine::observe(AuditObserver::class);
         JournalEntry::observe(AuditObserver::class);
         CutterWorkOrder::observe(AuditObserver::class);
 

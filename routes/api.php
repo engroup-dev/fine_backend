@@ -56,6 +56,7 @@ use App\Http\Controllers\Api\v1\SaleBundleController;
 use App\Http\Controllers\Api\v1\SaleController;
 use App\Http\Controllers\Api\v1\SalesMarginReportController;
 use App\Http\Controllers\Api\v1\SalesReturnController;
+use App\Http\Controllers\Api\v1\StockCountController;
 use App\Http\Controllers\Api\v1\StockLotController;
 use App\Http\Controllers\Api\v1\StockMovementCardController;
 use App\Http\Controllers\Api\v1\SupplierController;
@@ -407,10 +408,10 @@ Route::prefix('v1')->group(function () {
                 Route::apiResource('warehouse-transfers', WarehouseTransferController::class)->except(['destroy']);
                 Route::post('/warehouse-transfers/{id}/complete', [WarehouseTransferController::class, 'complete']);
                 Route::post('/warehouse-transfers/{id}/cancel', [WarehouseTransferController::class, 'cancel']);
+                // No work-order complete and no bare movement store (W4-01): both wrote lot-less
+                // movements with no journal. Stock moves only through the flows that record both.
                 Route::apiResource('work-orders', WorkOrderController::class);
-                Route::post('/work-orders/{id}/complete', [WorkOrderController::class, 'complete']);
                 Route::get('/inventory-movements', [InventoryMovementController::class, 'index']);
-                Route::post('/inventory-movements', [InventoryMovementController::class, 'store']);
                 Route::get('/inventory-movements/for-document/{type}/{documentId}', [InventoryMovementController::class, 'forDocument']);
                 Route::get('/inventory-movements/{id}', [InventoryMovementController::class, 'show']);
                 Route::get('/inventory/stock/{sku}', [InventoryMovementController::class, 'stock']);
@@ -421,6 +422,33 @@ Route::prefix('v1')->group(function () {
                 Route::put('/internal-restock-requests/{id}/approve', [InternalRestockController::class, 'approve']);
                 Route::put('/internal-restock-requests/{id}/reject', [InternalRestockController::class, 'reject']);
                 Route::post('/internal-restock-requests/{id}/fulfill', [InternalRestockController::class, 'fulfill']);
+            });
+
+            // Stock counts (W4-01, decision #13), reads: the counters and the approvers.
+            Route::middleware(['require.role:owner,inventory-manager,unit_manager,manager,accounting-manager', 'require.module:view-inventory'])->group(function () {
+                Route::get('/stock-counts', [StockCountController::class, 'index']);
+                Route::get('/stock-counts/{id}', [StockCountController::class, 'show'])->whereUuid('id');
+                Route::get('/stock-counts/{id}/sheet', [StockCountController::class, 'sheet'])->whereUuid('id');
+            });
+
+            // Stock counts: an inventory manager or unit manager opens and enters a count.
+            Route::middleware(['require.role:owner,inventory-manager,unit_manager,manager', 'require.module:view-inventory,edit-inventory'])->group(function () {
+                Route::post('/stock-counts', [StockCountController::class, 'store']);
+                Route::put('/stock-counts/{id}', [StockCountController::class, 'update'])->whereUuid('id');
+                Route::delete('/stock-counts/{id}', [StockCountController::class, 'destroy'])->whereUuid('id');
+                Route::put('/stock-counts/{id}/lines', [StockCountController::class, 'updateLines'])->whereUuid('id');
+                Route::post('/stock-counts/{id}/found', [StockCountController::class, 'addFound'])->whereUuid('id');
+                Route::post('/stock-counts/{id}/submit', [StockCountController::class, 'submit'])->whereUuid('id');
+            });
+
+            // Stock counts: the counters or an approver may cancel one.
+            Route::middleware(['require.role:owner,inventory-manager,unit_manager,manager,accounting-manager', 'require.module:view-inventory,edit-inventory|approve-stock-counts'])->group(function () {
+                Route::post('/stock-counts/{id}/cancel', [StockCountController::class, 'cancel'])->whereUuid('id');
+            });
+
+            // Stock counts: the owner or an accounting manager approves (never the counter).
+            Route::middleware(['require.role:owner,accounting-manager', 'require.module:approve-stock-counts'])->group(function () {
+                Route::post('/stock-counts/{id}/approve', [StockCountController::class, 'approve'])->whereUuid('id');
             });
 
             // Clients

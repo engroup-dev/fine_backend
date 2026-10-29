@@ -10,7 +10,6 @@ use App\Models\Warehouse;
 use App\Support\CurrentUnitContext;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use Illuminate\Support\Str;
 
 final class InventoryMovementController extends Controller
 {
@@ -31,39 +30,6 @@ final class InventoryMovementController extends Controller
         $movements = $query->latest()->paginate();
 
         return response()->json($movements);
-    }
-
-    /**
-     * Store a newly created inventory movement.
-     */
-    public function store(Request $request): JsonResponse
-    {
-        $validated = $request->validate([
-            'operating_unit_id' => ['nullable', 'uuid', 'exists:operating_units,id'],
-            'sku' => ['required', 'string', 'max:255'],
-            'quantity_delta' => ['required', 'numeric'],
-            'reason' => ['required', 'string', 'max:255'],
-            'reference_id' => ['nullable', 'uuid'],
-        ]);
-
-        $unitId = $validated['operating_unit_id']
-            ?? $request->header('X-Operating-Unit-ID')
-            ?? app(CurrentUnitContext::class)->getUnitId();
-
-        if (! $unitId) {
-            return response()->json(['message' => 'Operating Unit context header or body field is required.'], 422);
-        }
-
-        $movement = InventoryMovement::create([
-            'id' => (string) Str::uuid(),
-            'operating_unit_id' => $unitId,
-            'sku' => $validated['sku'],
-            'quantity_delta' => $validated['quantity_delta'],
-            'reason' => $validated['reason'],
-            'reference_id' => $validated['reference_id'] ?? null,
-        ]);
-
-        return response()->json($movement, 201);
     }
 
     /**

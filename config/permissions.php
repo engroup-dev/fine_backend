@@ -48,6 +48,7 @@ return [
         ['slug' => 'view-sales', 'name' => 'عرض المبيعات', 'module' => 'sales', 'action' => 'view'],
         ['slug' => 'edit-sales', 'name' => 'تعديل المبيعات', 'module' => 'sales', 'action' => 'edit'],
         ['slug' => 'edit-inventory', 'name' => 'تعديل المخزون', 'module' => 'inventory', 'action' => 'edit'],
+        ['slug' => 'approve-stock-counts', 'name' => 'اعتماد الجرد', 'module' => 'inventory', 'action' => 'approve'],
         ['slug' => 'view-accounting', 'name' => 'عرض الحسابات والتقارير المالية', 'module' => 'accounting', 'action' => 'view'],
         ['slug' => 'manage-accounting', 'name' => 'إدارة المحاسبة والقيود', 'module' => 'accounting', 'action' => 'manage'],
         ['slug' => 'view-debtor-statements', 'name' => 'عرض كشوف المدينين', 'module' => 'accounting', 'action' => 'view-statements'],
@@ -84,7 +85,7 @@ return [
 
     'role_permissions' => [
         'admin' => ['*'],
-        'accounting-manager' => ['approve-credit', 'approve-price-override', 'create-sales-returns', 'create-treasury', 'edit-clients', 'edit-inventory', 'edit-procurement', 'manage-accounting', 'manage-hr', 'settle-payables', 'view-accounting', 'view-clients', 'view-debtor-statements', 'view-hr', 'view-inventory', 'view-procurement', 'view-treasury'],
+        'accounting-manager' => ['approve-credit', 'approve-price-override', 'approve-stock-counts', 'create-sales-returns', 'create-treasury', 'edit-clients', 'edit-inventory', 'edit-procurement', 'manage-accounting', 'manage-hr', 'settle-payables', 'view-accounting', 'view-clients', 'view-debtor-statements', 'view-hr', 'view-inventory', 'view-procurement', 'view-treasury'],
         'assembler' => ['edit-furniture', 'edit-inventory', 'view-accounting', 'view-furniture', 'view-inventory'],
         'cutter-manager' => ['create-cutting', 'create-sales', 'create-treasury', 'edit-cutting', 'edit-inventory', 'edit-procurement', 'manage-hr', 'manage-material-requests', 'view-accounting', 'view-cutting', 'view-hr', 'view-inventory', 'view-material-requests', 'view-procurement', 'view-sales', 'view-treasury'],
         'cutter-operator' => ['edit-cutting', 'edit-inventory', 'view-accounting', 'view-cutting', 'view-inventory'],
