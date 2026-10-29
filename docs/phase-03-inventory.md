@@ -150,6 +150,28 @@ GET    /api/v1/inventory/ledger/{warehouse_id}
 | INV-08 | Partial block consumption creates either: (a) new smaller StockLot, or (b) ByproductYield | Business rule: default to byproduct for v1 simplicity (open question in SRS 19.3) |
 | INV-09 | Inventory valuation rollup is read-only for Owner/GM | Policy on valuation endpoints |
 | INV-10 | Empty barrels/drums and pallets are sellable inventory items | `item_type = barrel \| pallet` with `unit_of_measure = each` |
+| INV-11 | A lot's value enters and leaves the ledger through its item type's inventory account (2026-10-29) | `InventoryAccounts::forItem` / `forLot`; `inventory:reconcile-accounts` |
+
+### Inventory accounts (INV-11)
+
+Every posting that moves lot value names the account from the lot's item type, never the unit's `purchases` mapping: `foam_block` → 1131, `cut_template_piece` / `slice` → 1132, `byproduct_fill` → 1133, `furniture_finished_good` / `finished_good` → 1134, everything else (raw materials, chemicals, containers, fabric) → 111. Intake, local and import purchase receipts, sale cost, bundle delivery, restock and internal transfers (same account, only the unit changes), sales-return restock, foam close and cutter outputs all use it; WIP accounts 1121/1122/1123 hold value in production by design (a block reserved by a cutter work order sits in 1122).
+
+`php artisan inventory:reconcile-accounts {--post} {--date=} {--unit=}` compares, per operating unit, each of 111 and 1131–1134 with the value of the unit's live lots (quantity > 0; available, quarantined or reserved for a sale) and prints unit, account, expected, actual and difference. Without `--post` it writes nothing. With `--post` each unit with a difference of at least 0.01 gets one adjustment entry ("تسوية حسابات المخزون مع قيمة الدفعات") that moves every account to its expected balance, the net to 52 فروقات المخزون والتصنيع; a locked month refuses it (ACC-11) and a second run posts nothing. Run it once after deploying this release: first without `--post`, review the table, then with `--post`.
+
+What the command leaves out, refuses or warns about:
+
+- Lots whose value is still in work in process are not counted: a block attached to a cutter work order (whatever its status; the value sits in 1122), a byproduct fill lot weighed in on a cutter order that is not completed yet (its value reaches the fill account only at completion), and blocks of a foam batch that is not closed yet (their value reaches 1131 only when the close apportions the batch cost and posts it).
+- **Foam production consumption is not posted today.** Production never draws raw-material lots down (no route reaches `StockLotService::drawFromLot`), while the close credits 1121 with the batch's material cost. So 111 and its lots both still carry the consumed material, and 1121 carries the credit; the reconcile leaves 111 alone in that case, since ledger and lots agree. The command measures the gap directly (close credits on 1121 against consumption entries DR 1121 / CR 111, not the 1121 balance, which overhead absorption also feeds), prints it per unit, and `--post` refuses a unit only when that gap exists **and** 111 runs above its lots: consumed lots were then probably written down by hand with no entry, so the surplus belongs to 1121, not 52. Post DR 1121 / CR 111 for it (the lots are already down, so an entry alone is right), then run again. Do not post a consumption entry for lots that were not drawn down: the next run would see 111 below its lots and book the difference back through 52.
+- Blocks consumed through a cut-remnant decision with no remnant restocked (`POST /stock-lots/{id}/process-cut-remnant`) keep their value on the block's account with no entry. The consumed lot no longer counts as stock, so `--post` books that value to 52 as a variance; the command warns per unit before it does.
+- Lot-account lines with no operating unit, and lots or lines of a deleted unit, appear on a "(no unit / deleted unit)" row with a warning. They are never posted, because no unit entry can correct them, so they need a manual correction.
+- 52 and the lot accounts must be postable leaves. If one has gained sub-accounts, `--post` writes nothing.
+- Warehouse transfers move lots only within one unit: both warehouses must belong to the transfer's own unit, on create, edit and completion (`TRANSFER_CROSS_UNIT`). Use an internal restock or an internal sale instead, since those post the value between the units.
+
+Follow-ups, not built yet:
+
+- Production consumption posting: a foam batch (and other production) should draw its raw-material lots down and post DR 1121 / CR 111 in the same transaction. Until then 1121 carries a credit for every closed batch and 111 overstates raw materials.
+- Cut-remnant consumption posting: `processCutRemnant` without a restocked remnant should post the block's value out of its account (to the byproduct account or 1122) instead of leaving it for the reconcile to expense to 52.
+- An item's `item_type` can still be edited while it holds stock. Its lots would then sit in another account with no entry, and the next reconcile would book that reclassification to 52 as a variance.
 
 ---
 

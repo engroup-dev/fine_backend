@@ -4,14 +4,12 @@ declare(strict_types=1);
 
 namespace App\Services;
 
-use App\Enums\InventoryEventType;
 use App\Enums\LandedCostType;
 use App\Enums\PaymentRequestStatus;
 use App\Enums\PaymentRoute;
 use App\Enums\PurchaseOrderKind;
 use App\Enums\PurchaseOrderStatus;
 use App\Exceptions\InvalidStateTransitionException;
-use App\Exceptions\InventoryAccountNotLinkedException;
 use App\Models\Account;
 use App\Models\BankHold;
 use App\Models\CashAccount;
@@ -24,6 +22,7 @@ use App\Models\PurchaseOrderItem;
 use App\Models\StockLot;
 use App\Models\Supplier;
 use App\Models\Warehouse;
+use App\Support\InventoryAccounts;
 use App\Support\LedgerAccounts;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
@@ -672,8 +671,8 @@ final class PurchaseOrderStateService
             $this->postCompletionJournal($order);
 
             // Materialise the line items into the destination warehouse.
-            // `postCompletionJournal()` already posted the inventory DR
-            // using the canonical Raw Material Inventory (111) account.
+            // `postCompletionJournal()` already posted the inventory DR on
+            // each item type's account (INV-11).
             $this->routeGoodsIntoWarehouse($order);
 
             $order->update(['status' => PurchaseOrderStatus::Complete]);
@@ -685,7 +684,8 @@ final class PurchaseOrderStateService
     /**
      * Phase 08 §8.4, PurchaseOrder.Complete — the purchase reaches the ledger.
      *
-     *   DR  1110 Raw Material Inventory   (supplier cost at booked rate + landed costs)
+     *   DR  inventory (INV-11: item type's account, 111 for raw materials)
+     *                                     (supplier cost at booked rate + landed costs)
      *   DR  5300 FX Loss                  (realized > booked)
      *   CR  2100 Accounts Payable         (supplier cost at realized rate)
      *   CR  4200 FX Gain                  (realized < booked)
@@ -747,12 +747,15 @@ final class PurchaseOrderStateService
         $inventoryValue = round($bookedCost + $landedCostTotal, 4);
         $perUnit = $receivedQty > 0.0 ? round($inventoryValue / $receivedQty, 4) : 0.0;
 
-        $lines = [[
-            'account_code' => '111', // Raw Material Inventory
-            'debit' => $inventoryValue,
-            'operating_unit_id' => $order->operating_unit_id,
-            'memo' => "{$receivedQty} received at {$perUnit}/unit landed",
-        ]];
+        $lines = [];
+        foreach ($this->inventoryValueByAccount($order, $inventoryValue) as $accountCode => $amount) {
+            $lines[] = [
+                'account_code' => (string) $accountCode,
+                'debit' => $amount,
+                'operating_unit_id' => $order->operating_unit_id,
+                'memo' => "{$receivedQty} received at {$perUnit}/unit landed",
+            ];
+        }
 
         if ($fxDifference > 0) {
             $lines[] = [
@@ -801,6 +804,49 @@ final class PurchaseOrderStateService
             $order->id,
             $order->operatingUnit?->company_id,
         );
+    }
+
+    /**
+     * INV-11: split the landed inventory value over the item-type accounts
+     * the lots will sit in. The foreign flow stocks every unit at the same
+     * landed value, so each account's share follows the quantity of its
+     * items; the last account absorbs the rounding so the split sums back
+     * to the value exactly. An order of raw materials only gets one 111 line.
+     *
+     * @return array<string, float>
+     */
+    private function inventoryValueByAccount(PurchaseOrder $order, float $inventoryValue): array
+    {
+        $quantityByAccount = [];
+
+        foreach ($order->items()->get() as $item) {
+            $account = InventoryAccounts::forItemId($item->inventory_item_id);
+            $quantityByAccount[$account] = ($quantityByAccount[$account] ?? 0.0) + (float) $item->quantity;
+        }
+
+        $totalQuantity = array_sum($quantityByAccount);
+
+        if ($quantityByAccount === [] || $totalQuantity <= 0.0) {
+            return ['111' => $inventoryValue];
+        }
+
+        $split = [];
+        $allocated = 0.0;
+        $accounts = array_keys($quantityByAccount);
+        $last = end($accounts);
+
+        foreach ($quantityByAccount as $account => $quantity) {
+            $amount = $account === $last
+                ? round($inventoryValue - $allocated, 4)
+                : round($inventoryValue * ($quantity / $totalQuantity), 4);
+            $allocated = round($allocated + $amount, 4);
+
+            if ($amount > 0) {
+                $split[(string) $account] = $amount;
+            }
+        }
+
+        return $split;
     }
 
     /**
@@ -879,8 +925,8 @@ final class PurchaseOrderStateService
      * Materialise every line item as a StockLot in the destination warehouse.
      * Called by `completeOrder` (foreign) and `payLocal` (local) at the final
      * accounting step, inside the same transaction that posts the inventory
-     * journal. Hard-fails with 422 INVENTORY_ACCOUNT_NOT_LINKED when any
-     * line item is missing its `purchases` per-event COA override.
+     * journal. Each line's value is debited to its item type's account
+     * (INV-11, InventoryAccounts).
      *
      * For local flow: one StockLot per line item with `received_quantity > 0`,
      * `unit_cost = line.unit_price`. Partial receipts only stock the
@@ -941,19 +987,8 @@ final class PurchaseOrderStateService
                     );
                 }
 
-                $orderUnit = $order->operatingUnit;
-                if ($orderUnit === null) {
-                    throw new InvalidArgumentException(
-                        "Order {$order->id} is missing its operating unit.",
-                    );
-                }
-
-                $purchasesAccount = $orderUnit->accountFor(InventoryEventType::Purchases);
-                if ($purchasesAccount === null) {
-                    throw new InventoryAccountNotLinkedException($inventoryItem, $orderUnit, InventoryEventType::Purchases);
-                }
-
-                $inventoryAccountCode = $purchasesAccount->account_code;
+                // INV-11: the lot's value enters through its item type's account.
+                $inventoryAccountCode = InventoryAccounts::forItem($inventoryItem);
 
                 // Force string keys — PHP coerces numeric strings to ints
                 // when used as array keys, which breaks the journal

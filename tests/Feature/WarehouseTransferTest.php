@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use App\Exceptions\LedgerRuleException;
 use App\Models\Company;
 use App\Models\InventoryItem;
 use App\Models\OperatingUnit;
@@ -12,6 +13,7 @@ use App\Models\User;
 use App\Models\UserRole;
 use App\Models\Warehouse;
 use App\Models\WarehouseTransfer;
+use App\Services\StockLotService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 
 uses(RefreshDatabase::class);
@@ -237,6 +239,89 @@ test('draft creation is rejected when the destination warehouse belongs to anoth
 
     $response->assertStatus(422);
     $response->assertJsonValidationErrors(['to_warehouse_id']);
+});
+
+test('a company-wide role without a unit header cannot point a transfer at another unit', function () {
+    $otherUnit = OperatingUnit::create([
+        'company_id' => $this->company->id,
+        'blueprint_id' => $this->blueprint->id,
+        'name' => 'Other Unit',
+        'code' => 'OTHER-02',
+        'unit_type' => 'foam_manufactory',
+    ]);
+    $otherWarehouse = Warehouse::create(['operating_unit_id' => $otherUnit->id, 'name' => 'Other Warehouse']);
+    $otherWarehouse2 = Warehouse::create(['operating_unit_id' => $otherUnit->id, 'name' => 'Other Warehouse 2']);
+
+    $lot = StockLot::factory()->create([
+        'inventory_item_id' => $this->itemA->id,
+        'warehouse_id' => $this->warehouseA->id,
+        'quantity' => 20,
+        'status' => 'available',
+    ]);
+
+    $owner = User::factory()->create(['must_change_password' => false]);
+    UserRole::create([
+        'user_id' => $owner->id,
+        'role_id' => Role::create(['name' => 'Owner', 'slug' => 'owner'])->id,
+        'operating_unit_id' => null,
+    ]);
+
+    $transfer = WarehouseTransfer::create([
+        'operating_unit_id' => $this->unit->id,
+        'transfer_number' => 'XFER-CROSS',
+        'from_warehouse_id' => $this->warehouseA->id,
+        'to_warehouse_id' => $this->warehouseB->id,
+    ]);
+    $transfer->lines()->create(['inventory_item_id' => $this->itemA->id, 'quantity' => 5]);
+    $lines = [['inventory_item_id' => $this->itemA->id, 'quantity' => 5]];
+
+    // Without a unit header ExistsInCurrentUnit lets another unit's warehouses through.
+    $this->actingAs($owner)->putJson("/api/v1/warehouse-transfers/{$transfer->id}", [
+        'to_warehouse_id' => $otherWarehouse->id,
+        'lines' => $lines,
+    ])->assertStatus(422)->assertJsonPath('code', 'TRANSFER_CROSS_UNIT');
+
+    // Both warehouses moved to the other unit: unit A's transfer would move unit B's stock.
+    $this->actingAs($owner)->putJson("/api/v1/warehouse-transfers/{$transfer->id}", [
+        'from_warehouse_id' => $otherWarehouse->id,
+        'to_warehouse_id' => $otherWarehouse2->id,
+        'lines' => $lines,
+    ])->assertStatus(422)->assertJsonPath('code', 'TRANSFER_CROSS_UNIT');
+
+    expect($transfer->fresh()->from_warehouse_id)->toBe($this->warehouseA->id)
+        ->and($transfer->fresh()->to_warehouse_id)->toBe($this->warehouseB->id);
+
+    // A draft saved across units before the check existed cannot complete either.
+    $transfer->update(['to_warehouse_id' => $otherWarehouse->id]);
+
+    $this->actingAs($owner)->postJson("/api/v1/warehouse-transfers/{$transfer->id}/complete")
+        ->assertStatus(422)
+        ->assertJsonPath('code', 'TRANSFER_CROSS_UNIT');
+
+    expect((float) $lot->fresh()->quantity)->toBe(20.0)
+        ->and($transfer->fresh()->status->value)->toBe('draft');
+    $this->assertDatabaseCount('inventory_movements', 0);
+    expect(StockLot::where('warehouse_id', $otherWarehouse->id)->exists())->toBeFalse();
+});
+
+test('the stock service refuses a move between warehouses of different units', function () {
+    $otherUnit = OperatingUnit::create([
+        'company_id' => $this->company->id,
+        'blueprint_id' => $this->blueprint->id,
+        'name' => 'Other Unit',
+        'code' => 'OTHER-03',
+        'unit_type' => 'foam_manufactory',
+    ]);
+    $otherWarehouse = Warehouse::create(['operating_unit_id' => $otherUnit->id, 'name' => 'Other Warehouse']);
+    StockLot::factory()->create([
+        'inventory_item_id' => $this->itemA->id,
+        'warehouse_id' => $this->warehouseA->id,
+        'quantity' => 20,
+        'status' => 'available',
+    ]);
+
+    expect(fn () => app(StockLotService::class)->transferBetweenWarehouses($this->itemA->id, $this->warehouseA->id, $otherWarehouse->id, 5))
+        ->toThrow(LedgerRuleException::class);
 });
 
 test('a completed transfer cannot be edited, completed again, or cancelled', function () {

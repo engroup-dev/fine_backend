@@ -6,6 +6,7 @@ use App\Enums\InventoryEventType;
 use App\Models\Account;
 use App\Models\Company;
 use App\Models\InventoryItem;
+use App\Models\JournalLine;
 use App\Models\OperatingUnit;
 use App\Models\OperatingUnitAccount;
 use App\Models\Role;
@@ -51,7 +52,7 @@ beforeEach(function () {
         ?? Account::where('account_code', '40201')->sole();
 });
 
-test('a unit without a purchases mapping refuses stock intake with 422 INVENTORY_ACCOUNT_NOT_LINKED', function () {
+test('a unit without a purchases mapping still takes stock intake on the item type account (INV-11)', function () {
     ($this->api)()->postJson('/api/v1/stock-lots/intake', [
         'inventory_item_id' => $this->fabric->id,
         'warehouse_id' => $this->warehouse->id,
@@ -59,8 +60,9 @@ test('a unit without a purchases mapping refuses stock intake with 422 INVENTORY
         'quantity' => 50,
         'unit_cost' => 8.0,
         'source' => 'purchase_credit',
-    ])->assertStatus(422)
-        ->assertJsonPath('code', 'INVENTORY_ACCOUNT_NOT_LINKED');
+    ])->assertStatus(201);
+
+    expect((float) JournalLine::where('account_id', $this->inventoryAccount->id)->sum('debit'))->toBe(400.0);
 });
 
 test('linking the unit purchases account lets stock intake succeed', function () {
@@ -80,11 +82,13 @@ test('linking the unit purchases account lets stock intake succeed', function ()
     ])->assertStatus(201);
 });
 
-test('item-level account rows are ignored — only the unit mapping resolves', function () {
-    // Even if the old per-item table existed (we left it dropped, but the
-    // spirit of this assertion is "no fallback path") — the resolution now
-    // goes via the unit only. Without a unit mapping, intake still 422s.
-    expect(OperatingUnitAccount::where('operating_unit_id', $this->unit->id)->count())->toBe(0);
+test('lot value ignores the unit purchases mapping — the item type decides (INV-11)', function () {
+    // A unit mapping pointing elsewhere does not move the intake off 111.
+    OperatingUnitAccount::create([
+        'operating_unit_id' => $this->unit->id,
+        'event_type' => InventoryEventType::Purchases->value,
+        'account_id' => Account::where('account_code', '1134')->sole()->id,
+    ]);
 
     ($this->api)()->postJson('/api/v1/stock-lots/intake', [
         'inventory_item_id' => $this->fabric->id,
@@ -93,6 +97,8 @@ test('item-level account rows are ignored — only the unit mapping resolves', f
         'quantity' => 50,
         'unit_cost' => 8.0,
         'source' => 'purchase_credit',
-    ])->assertStatus(422)
-        ->assertJsonPath('code', 'INVENTORY_ACCOUNT_NOT_LINKED');
+    ])->assertStatus(201);
+
+    expect((float) JournalLine::where('account_id', $this->inventoryAccount->id)->sum('debit'))->toBe(400.0)
+        ->and((float) JournalLine::where('account_id', Account::where('account_code', '1134')->value('id'))->sum('debit'))->toBe(0.0);
 });

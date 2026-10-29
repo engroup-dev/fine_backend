@@ -22,6 +22,7 @@ use App\Models\SaleComponentAllocation;
 use App\Models\SalesOrder;
 use App\Models\StockLot;
 use App\Models\User;
+use App\Support\InventoryAccounts;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Collection;
@@ -264,7 +265,8 @@ class CutterWorkOrderService
                 "Block {$locked->lot_number} reserved for cutter order {$order->order_number}",
                 [
                     ['account_code' => '1122', 'debit' => $unitCost, 'operating_unit_id' => $order->operating_unit_id],
-                    ['account_code' => '1131', 'credit' => $unitCost, 'operating_unit_id' => $order->operating_unit_id],
+                    // INV-11: the block's value leaves its own account into WIP.
+                    ['account_code' => InventoryAccounts::forLot($locked), 'credit' => $unitCost, 'operating_unit_id' => $order->operating_unit_id],
                 ],
                 'CutterWorkOrder',
                 $order->id,
@@ -290,7 +292,8 @@ class CutterWorkOrderService
             $this->accountingService->postJournal(
                 "Reversal: Block reservation removed from cutter order {$order->order_number}",
                 [
-                    ['account_code' => '1131', 'debit' => $cost, 'operating_unit_id' => $order->operating_unit_id],
+                    // INV-11: back into the block's own account.
+                    ['account_code' => $block !== null ? InventoryAccounts::forLot($block) : InventoryAccounts::forItemType('foam_block'), 'debit' => $cost, 'operating_unit_id' => $order->operating_unit_id],
                     ['account_code' => '1122', 'credit' => $cost, 'operating_unit_id' => $order->operating_unit_id],
                 ],
                 'CutterWorkOrder',
@@ -432,7 +435,8 @@ class CutterWorkOrderService
                 "Block {$locked->lot_number} into cutter order {$order->order_number}",
                 [
                     ['account_code' => '1122', 'debit' => $blockCost, 'operating_unit_id' => $order->operating_unit_id],
-                    ['account_code' => '1131', 'credit' => $blockCost, 'operating_unit_id' => $order->operating_unit_id],
+                    // INV-11: the block's value leaves its own account into WIP.
+                    ['account_code' => InventoryAccounts::forLot($locked), 'credit' => $blockCost, 'operating_unit_id' => $order->operating_unit_id],
                 ],
                 'CutterWorkOrder',
                 $order->id,
@@ -707,8 +711,13 @@ class CutterWorkOrderService
         $allocated = 0.0;
         $created = 0;
         $touchedSales = [];
+        $pieceCostByAccount = [];
 
         foreach ($lines as $line) {
+            // INV-11: each piece enters its output item type's account — by
+            // id, so an output item archived since the order keeps its type.
+            $pieceAccount = InventoryAccounts::forItemId($line->output_inventory_item_id);
+
             $lineShare = $totalVolume > 0
                 ? $pieceCost * ($line->requiredVolumeM3() / $totalVolume)
                 : $pieceCost * ($line->quantity / $totalPieces);
@@ -721,6 +730,7 @@ class CutterWorkOrderService
                 // sum back to exactly the value taken out of WIP.
                 $cost = $created === $totalPieces ? round($pieceCost - $allocated, 4) : $costPerPiece;
                 $allocated = round($allocated + $cost, 4);
+                $pieceCostByAccount[$pieceAccount] = round(($pieceCostByAccount[$pieceAccount] ?? 0) + $cost, 4);
 
                 // CUT-05: the piece is stocked at its template dimensions, not
                 // the shape the client described. It carries the first block
@@ -782,11 +792,28 @@ class CutterWorkOrderService
         $journalLines = [];
 
         if ($pieceCost > 0) {
-            $journalLines[] = ['account_code' => '1132', 'debit' => $pieceCost, 'operating_unit_id' => $order->operating_unit_id];
+            foreach ($pieceCostByAccount as $account => $amount) {
+                if ($amount > 0) {
+                    $journalLines[] = ['account_code' => (string) $account, 'debit' => $amount, 'operating_unit_id' => $order->operating_unit_id];
+                }
+            }
         }
 
         if ($byproductCost > 0) {
-            $journalLines[] = ['account_code' => '1133', 'debit' => $byproductCost, 'operating_unit_id' => $order->operating_unit_id];
+            // INV-11: the fill lot's own account; a yield with no lot keeps 1133.
+            $byproductByAccount = [];
+            foreach ($order->byproductYields()->with(['stockLot' => fn ($q) => $q->withoutGlobalScopes()->with('inventoryItem')])->get() as $yield) {
+                $account = $yield->stockLot !== null
+                    ? InventoryAccounts::forLot($yield->stockLot)
+                    : InventoryAccounts::forItemType('byproduct_fill');
+                $byproductByAccount[$account] = round(($byproductByAccount[$account] ?? 0) + (float) $yield->yield_cost, 4);
+            }
+
+            foreach ($byproductByAccount as $account => $amount) {
+                if ($amount > 0) {
+                    $journalLines[] = ['account_code' => (string) $account, 'debit' => $amount, 'operating_unit_id' => $order->operating_unit_id];
+                }
+            }
         }
 
         $total = round($pieceCost + $byproductCost, 4);

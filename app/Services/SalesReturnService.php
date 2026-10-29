@@ -22,6 +22,7 @@ use App\Models\SalesReturnLine;
 use App\Models\StockLot;
 use App\Models\User;
 use App\Support\CompanyClock;
+use App\Support\InventoryAccounts;
 use App\Support\ReceivableAccounts;
 use App\Support\SalesAccounts;
 use Illuminate\Support\Collection;
@@ -189,6 +190,7 @@ final class SalesReturnService
             ]);
 
             $restockCost = 0.0;
+            $restockByAccount = [];
             $damagedCost = 0.0;
             $totalCost = 0.0;
             $firstItem = null;
@@ -210,6 +212,10 @@ final class SalesReturnService
 
                 if ($entry['condition'] === 'restock') {
                     $restockCost += $lineCost;
+                    // INV-11: the goods go back into their lot's account —
+                    // by id, so an item archived since the sale keeps its type.
+                    $account = InventoryAccounts::forItemId($line->inventory_item_id);
+                    $restockByAccount[$account] = round(($restockByAccount[$account] ?? 0) + $lineCost, 4);
                 } else {
                     $damagedCost += $lineCost;
                 }
@@ -238,6 +244,7 @@ final class SalesReturnService
                 $cashAccount,
                 $amount,
                 round($restockCost, 4),
+                $restockByAccount,
                 round($damagedCost, 4),
                 $firstItem,
                 $user,
@@ -517,7 +524,11 @@ final class SalesReturnService
     }
 
     /**
-     * One balanced entry for the whole return.
+     * One balanced entry for the whole return. Restocked goods go back into
+     * their item type's account (INV-11); damaged goods to the unit's waste
+     * account.
+     *
+     * @param  array<string, float>  $restockByAccount
      *
      * @throws SalesRuleException|InventoryAccountNotLinkedException
      */
@@ -529,6 +540,7 @@ final class SalesReturnService
         ?CashAccount $cashAccount,
         float $amount,
         float $restockCost,
+        array $restockByAccount,
         float $damagedCost,
         ?InventoryItem $item,
         User $user,
@@ -554,7 +566,11 @@ final class SalesReturnService
         }
 
         if ($restockCost > 0) {
-            $lines[] = ['account_code' => $this->unitAccount($unit, InventoryEventType::Purchases, $item), 'debit' => $restockCost, 'operating_unit_id' => $unitId];
+            foreach ($restockByAccount as $account => $accountCost) {
+                if ($accountCost > 0) {
+                    $lines[] = ['account_code' => (string) $account, 'debit' => $accountCost, 'operating_unit_id' => $unitId];
+                }
+            }
             $lines[] = ['account_code' => SalesAccounts::COGS, 'credit' => $restockCost, 'operating_unit_id' => $unitId];
         }
 

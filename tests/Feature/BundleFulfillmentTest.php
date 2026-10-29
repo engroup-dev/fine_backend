@@ -271,13 +271,11 @@ test('delivering hands the pieces over and books their cost, each from the unit 
     expect($tb['balanced'])->toBeTrue()
         ->and((float) $byCode['40204']['credit'])->toBe(2500.0)
         ->and((float) $byCode['51']['debit'])->toBe(390.0)
-        // The cutter's purchases account is 1132 (overridden in beforeEach
-        // to match what the legacy per-item-type mapping used to dispatch),
-        // so only the two seats that left the cutter warehouse land on it.
-        ->and((float) $byCode['1132']['credit'])->toBe(110.0)
-        // The showroom's purchases account is the raw-materials header 111;
-        // its two seats, two backs and 12 m of fabric all leave from there.
-        ->and((float) $byCode['111']['credit'])->toBe(280.0);
+        // INV-11: every cut piece leaves 1132 (its item type's account),
+        // whichever unit held it — four seats and two backs.
+        ->and((float) $byCode['1132']['credit'])->toBe(270.0)
+        // Only the 12 m of fabric (raw material) leaves 111.
+        ->and((float) $byCode['111']['credit'])->toBe(120.0);
 
     // The cutter's two seats left the cutter's own subledger.
     $cutterCredit = JournalLine::where('operating_unit_id', $this->cutter->id)->sum('credit');

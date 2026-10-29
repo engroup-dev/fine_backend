@@ -4,12 +4,10 @@ declare(strict_types=1);
 
 namespace App\Services;
 
-use App\Enums\InventoryEventType;
 use App\Exceptions\InvalidStateTransitionException;
-use App\Exceptions\InventoryAccountNotLinkedException;
 use App\Models\InternalRestockRequest;
-use App\Models\InventoryItem;
 use App\Models\OperatingUnit;
+use App\Support\InventoryAccounts;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -22,23 +20,6 @@ class SalesOrderService
         private readonly AccountingService $accountingService,
         private readonly StockIssueService $stockIssueService,
     ) {}
-
-    /**
-     * Which chart-of-accounts sub-account carries the restocked item's value
-     * when it leaves the source unit. Resolved from the source unit's
-     * `purchases` override; hard-fails with `INVENTORY_ACCOUNT_NOT_LINKED`
-     * when none is set.
-     */
-    private function inventoryAccountFor(InventoryItem $item, OperatingUnit $unit): string
-    {
-        $account = $unit->accountFor(InventoryEventType::Purchases);
-
-        if ($account === null) {
-            throw new InventoryAccountNotLinkedException($item, $unit, InventoryEventType::Purchases);
-        }
-
-        return $account->account_code;
-    }
 
     /**
      * Fulfill an approved restock request. Fulfillment is the physical
@@ -84,10 +65,9 @@ class SalesOrderService
                 );
 
                 $totalCost += $cost;
-                $sourceUnit = $locked->sourceUnit ?? throw new InvalidStateTransitionException('Restock request is missing its source operating unit.');
-                $account = $this->inventoryAccountFor(
+                // INV-11: same account on both sides — only the unit changes.
+                $account = InventoryAccounts::forItem(
                     $line->inventoryItem ?? throw new InvalidStateTransitionException('Restock line is missing its inventory item.'),
-                    $sourceUnit,
                 );
                 $costByAccount[$account] = round(($costByAccount[$account] ?? 0) + $cost, 4);
             }

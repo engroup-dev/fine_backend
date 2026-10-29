@@ -4,15 +4,14 @@ declare(strict_types=1);
 
 namespace App\Services;
 
-use App\Enums\InventoryEventType;
 use App\Exceptions\InsufficientComponentStockException;
-use App\Exceptions\InventoryAccountNotLinkedException;
+use App\Exceptions\LedgerRuleException;
 use App\Models\InventoryItem;
 use App\Models\InventoryMovement;
-use App\Models\OperatingUnit;
 use App\Models\PurchaseOrder;
 use App\Models\StockLot;
 use App\Models\Warehouse;
+use App\Support\InventoryAccounts;
 use App\Support\TreasuryAccounts;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Builder;
@@ -32,7 +31,7 @@ class StockLotService
      * The one UI path by which quantities enter the system by hand — and it
      * enters properly: the lot is created, the INV-06 movement is recorded,
      * and the value reaches the ledger (ACC-02) according to where it came
-     * from:
+     * from. "inventory" is the item type's account (INV-11, InventoryAccounts):
      *
      *   opening_balance  DR inventory / CR 3100 Retained Earnings
      *   purchase_cash    DR inventory / CR 1200 Cash and Bank
@@ -144,7 +143,7 @@ class StockLotService
                     "Stock intake: {$item->code} lot {$lotNumber} ({$data['source']})",
                     [
                         [
-                            'account_code' => $this->inventoryAccountFor($item, $warehouse->operatingUnit),
+                            'account_code' => InventoryAccounts::forItem($item), // INV-11
                             'debit' => $value,
                             'operating_unit_id' => $warehouse->operating_unit_id,
                             'memo' => $memo,
@@ -163,24 +162,6 @@ class StockLotService
 
             return $lot->load(['inventoryItem.category', 'warehouse']);
         });
-    }
-
-    /**
-     * Which chart-of-accounts sub-account carries this item's value on the
-     * inventory DR leg during intake. Pulled from the operator-set
-     * per-unit override (Purchases event on the warehouse's operating
-     * unit); hard-fails with `INVENTORY_ACCOUNT_NOT_LINKED` when none is
-     * set.
-     */
-    private function inventoryAccountFor(InventoryItem $item, OperatingUnit $unit): string
-    {
-        $account = $unit->accountFor(InventoryEventType::Purchases);
-
-        if ($account === null) {
-            throw new InventoryAccountNotLinkedException($item, $unit, InventoryEventType::Purchases);
-        }
-
-        return $account->account_code;
     }
 
     /**
@@ -520,10 +501,12 @@ class StockLotService
     /**
      * Move stock of one item between two warehouses of the SAME operating
      * unit — never across units (that's `InternalRestockController`'s job,
-     * a separate approval-gated flow). Both warehouses are resolved through
-     * the caller's scoped unit context, so they can only ever be warehouses
-     * belonging to that one unit; the controller additionally requires a
-     * unit to be active before calling this at all.
+     * a separate approval-gated flow that posts the value between the
+     * units). The unit check is made here, not left to request validation:
+     * `ExistsInCurrentUnit` passes anything when no unit is selected (a
+     * company-wide role editing a draft without a unit header), and a lot
+     * moved across units with no entry would leave each unit's lot accounts
+     * off by its value (INV-11).
      *
      * Draws FIFO from available lots in the source warehouse (mirrors
      * `SalesOrderService::drawFromUnit`), splitting each lot drawn into a new
@@ -549,6 +532,14 @@ class StockLotService
             $item = InventoryItem::findOrFail($inventoryItemId);
             $fromWarehouse = Warehouse::findOrFail($fromWarehouseId);
             $toWarehouse = Warehouse::findOrFail($toWarehouseId);
+
+            if ($fromWarehouse->operating_unit_id !== $toWarehouse->operating_unit_id) {
+                throw new LedgerRuleException(
+                    "{$fromWarehouse->name} and {$toWarehouse->name} belong to different operating units; move stock between units with an internal restock or an internal sale.",
+                    'TRANSFER_CROSS_UNIT',
+                    ['from_warehouse_id' => $fromWarehouse->id, 'to_warehouse_id' => $toWarehouse->id],
+                );
+            }
 
             $lots = StockLot::where('inventory_item_id', $item->id)
                 ->where('warehouse_id', $fromWarehouse->id)

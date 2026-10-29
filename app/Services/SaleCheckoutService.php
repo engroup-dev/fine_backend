@@ -5,11 +5,9 @@ declare(strict_types=1);
 namespace App\Services;
 
 use App\Enums\ChequeStatus;
-use App\Enums\InventoryEventType;
 use App\Enums\SaleFulfillmentStatus;
 use App\Enums\SalesOrderStatus;
 use App\Exceptions\InvalidStateTransitionException;
-use App\Exceptions\InventoryAccountNotLinkedException;
 use App\Exceptions\SalesRuleException;
 use App\Models\Account;
 use App\Models\Bundle;
@@ -23,6 +21,7 @@ use App\Models\SalePayment;
 use App\Models\SalesOrder;
 use App\Models\SalesOrderLine;
 use App\Models\User;
+use App\Support\InventoryAccounts;
 use App\Support\ReceivableAccounts;
 use App\Support\SalesAccounts;
 use Illuminate\Contracts\Validation\ValidationRule;
@@ -644,17 +643,13 @@ final class SaleCheckoutService
 
             $totalCost += $cost;
             $inventoryItem = $line->inventoryItem;
-            $orderUnit = $order->operatingUnit;
-            if ($inventoryItem === null || $orderUnit === null) {
+            if ($inventoryItem === null) {
                 throw new InvalidStateTransitionException(
-                    'Sales order line is missing its inventory item or operating unit.',
+                    'Sales order line is missing its inventory item.',
                 );
             }
-            $purchasesAccount = $orderUnit->accountFor(InventoryEventType::Purchases);
-            if ($purchasesAccount === null) {
-                throw new InventoryAccountNotLinkedException($inventoryItem, $orderUnit, InventoryEventType::Purchases);
-            }
-            $account = $purchasesAccount->account_code;
+            // INV-11: the cost leaves through the item type's account.
+            $account = InventoryAccounts::forItem($inventoryItem);
             $costByAccount[$account] = round(($costByAccount[$account] ?? 0) + $cost, 4);
         }
 
@@ -820,6 +815,9 @@ final class SaleCheckoutService
     }
 
     /**
+     * INV-11: the lots keep their item type's account; only the unit on the
+     * lines changes (buyer DR, seller CR).
+     *
      * @param  array<string, float>  $costByAccount
      */
     private function postInternalTransfer(SalesOrder $order, array $costByAccount): void

@@ -11,6 +11,7 @@ use App\Models\MaterialRequest;
 use App\Models\ProductionBatch;
 use App\Models\Scopes\OperatingUnitScope;
 use App\Models\StockLot;
+use App\Support\InventoryAccounts;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 
@@ -169,7 +170,7 @@ class ProductionBatchService
      * Phase 04 §4.6: on close the run's value moves out of work in process and
      * into finished goods.
      *
-     *   DR  Finished Goods — Foam Blocks
+     *   DR  Finished Goods — the blocks' item type account (INV-11: 1131 for foam_block)
      *   CR  Work In Process — Foam Production
      *
      * Posted for the material cost actually apportioned onto blocks, not the
@@ -179,27 +180,40 @@ class ProductionBatchService
      */
     private function postClosingJournal(ProductionBatch $batch): void
     {
-        $apportioned = round((float) $batch->blocks()->sum('unit_cost'), 4);
+        $blocks = $batch->blocks()->with('inventoryItem')->get();
+        $apportioned = round((float) $blocks->sum(fn (StockLot $lot): float => (float) $lot->unit_cost), 4);
 
         if ($apportioned <= 0.0) {
             return;
         }
 
+        $valueByAccount = [];
+        foreach ($blocks as $block) {
+            $account = InventoryAccounts::forLot($block);
+            $valueByAccount[$account] = round(($valueByAccount[$account] ?? 0) + (float) $block->unit_cost, 4);
+        }
+
+        $lines = [];
+        foreach ($valueByAccount as $account => $value) {
+            if ($value > 0) {
+                $lines[] = [
+                    'account_code' => (string) $account,
+                    'debit' => $value,
+                    'operating_unit_id' => $batch->operating_unit_id,
+                    'memo' => "{$blocks->count()} blocks",
+                ];
+            }
+        }
+
+        $lines[] = [
+            'account_code' => '1121', // WIP — Foam Production
+            'credit' => $apportioned,
+            'operating_unit_id' => $batch->operating_unit_id,
+        ];
+
         $this->accountingService->postJournal(
             "Foam operation {$batch->operation_number} closed",
-            [
-                [
-                    'account_code' => '1131', // Finished Goods — Foam Blocks
-                    'debit' => $apportioned,
-                    'operating_unit_id' => $batch->operating_unit_id,
-                    'memo' => "{$batch->blocks()->count()} blocks",
-                ],
-                [
-                    'account_code' => '1121', // WIP — Foam Production
-                    'credit' => $apportioned,
-                    'operating_unit_id' => $batch->operating_unit_id,
-                ],
-            ],
+            $lines,
             'ProductionBatch',
             $batch->id,
             $batch->operatingUnit?->company_id,

@@ -50,6 +50,10 @@ final class WarehouseTransferController extends Controller
             ], 422);
         }
 
+        if ($refusal = $this->crossUnitRefusal($validated['from_warehouse_id'], $validated['to_warehouse_id'], $unitId)) {
+            return $refusal;
+        }
+
         $transfer = DB::transaction(function () use ($validated, $unitId) {
             $transfer = WarehouseTransfer::create([
                 'operating_unit_id' => $unitId,
@@ -89,6 +93,15 @@ final class WarehouseTransferController extends Controller
 
         $validated = $this->validateTransfer($request, sometimes: true);
 
+        $refusal = $this->crossUnitRefusal(
+            $validated['from_warehouse_id'] ?? $transfer->from_warehouse_id,
+            $validated['to_warehouse_id'] ?? $transfer->to_warehouse_id,
+            $transfer->operating_unit_id,
+        );
+        if ($refusal !== null) {
+            return $refusal;
+        }
+
         DB::transaction(function () use ($transfer, $validated): void {
             $transfer->update([
                 'from_warehouse_id' => $validated['from_warehouse_id'] ?? $transfer->from_warehouse_id,
@@ -122,6 +135,11 @@ final class WarehouseTransferController extends Controller
                 'message' => "Transfer {$transfer->transfer_number} is {$transfer->status->value} and cannot be completed.",
                 'code' => 'TRANSFER_NOT_DRAFT',
             ], 422);
+        }
+
+        // A draft saved before this check existed may still point elsewhere.
+        if ($refusal = $this->crossUnitRefusal($transfer->from_warehouse_id, $transfer->to_warehouse_id, $transfer->operating_unit_id)) {
+            return $refusal;
         }
 
         DB::transaction(function () use ($transfer): void {
@@ -160,6 +178,32 @@ final class WarehouseTransferController extends Controller
         $transfer->update(['status' => WarehouseTransferStatus::Cancelled]);
 
         return response()->json($transfer->fresh());
+    }
+
+    /**
+     * INV-11 / unit scoping: both warehouses must belong to the transfer's
+     * own unit. `ExistsInCurrentUnit` passes any warehouse when no unit is
+     * selected (a company-wide role without a unit header), so without this
+     * a draft could be pointed at another unit's warehouses — a transfer
+     * owned by one unit moving another unit's stock, or a cross-unit move
+     * with no entry. Stock moves between units through an internal restock
+     * or an internal sale, which post the value.
+     */
+    private function crossUnitRefusal(string $fromWarehouseId, string $toWarehouseId, ?string $unitId): ?JsonResponse
+    {
+        $units = Warehouse::withoutGlobalScopes()
+            ->whereKey([$fromWarehouseId, $toWarehouseId])
+            ->pluck('operating_unit_id', 'id');
+
+        if (($units[$fromWarehouseId] ?? null) === $unitId && ($units[$toWarehouseId] ?? null) === $unitId) {
+            return null;
+        }
+
+        return response()->json([
+            'message' => 'Both warehouses of a transfer must belong to its operating unit; move stock between units with an internal restock or an internal sale.',
+            'code' => 'TRANSFER_CROSS_UNIT',
+            'details' => ['from_warehouse_id' => $fromWarehouseId, 'to_warehouse_id' => $toWarehouseId, 'operating_unit_id' => $unitId],
+        ], 422);
     }
 
     /** @return array{transfer_number?: string, from_warehouse_id?: string, to_warehouse_id?: string, reason?: ?string, lines: array<int, array{inventory_item_id: string, quantity: float}>} */
