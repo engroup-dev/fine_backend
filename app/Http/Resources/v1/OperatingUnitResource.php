@@ -24,6 +24,7 @@ final class OperatingUnitResource extends JsonResource
             'status' => $this->status,
             'manager_user_id' => $this->manager_user_id,
             'revenue_account_id' => $this->revenue_account_id,
+            'pos_shifts_enabled' => (bool) $this->pos_shifts_enabled,
             'manager' => $this->whenLoaded('manager', fn () => $this->manager ? [
                 'id' => $this->manager->id,
                 'name' => $this->manager->name,

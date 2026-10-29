@@ -32,6 +32,7 @@ final class SalePayment extends Model
         'journal_entry_id',
         'cheque_id',
         'sales_return_id',
+        'pos_shift_id',
     ];
 
     protected $casts = [
@@ -64,5 +65,10 @@ final class SalePayment extends Model
     public function salesReturn(): BelongsTo
     {
         return $this->belongsTo(SalesReturn::class);
+    }
+
+    public function posShift(): BelongsTo
+    {
+        return $this->belongsTo(PosShift::class);
     }
 }

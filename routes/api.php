@@ -46,6 +46,7 @@ use App\Http\Controllers\Api\v1\PaymentRequestController;
 use App\Http\Controllers\Api\v1\PayrollRunController;
 use App\Http\Controllers\Api\v1\PermissionController;
 use App\Http\Controllers\Api\v1\PosController;
+use App\Http\Controllers\Api\v1\PosShiftController;
 use App\Http\Controllers\Api\v1\ProductionBatchController;
 use App\Http\Controllers\Api\v1\PurchaseOrderController;
 use App\Http\Controllers\Api\v1\QuotationController;
@@ -351,9 +352,21 @@ Route::prefix('v1')->group(function () {
                 Route::get('/pos/daily-report', [PosController::class, 'dailyReport']);
                 Route::get('/pos/daily-close', [PosController::class, 'showDailyClose']);
                 Route::post('/pos/daily-close', [PosController::class, 'dailyClose']);
+                // FR-SLREP-008: cashier shifts — opening float, X-report, Z-report close.
+                Route::get('/pos/shifts', [PosShiftController::class, 'index']);
+                Route::get('/pos/shifts/current', [PosShiftController::class, 'current']);
+                Route::post('/pos/shifts', [PosShiftController::class, 'store']);
+                Route::get('/pos/shifts/{id}', [PosShiftController::class, 'show'])->whereUuid('id');
+                Route::get('/pos/shifts/{id}/x-report', [PosShiftController::class, 'xReport'])->whereUuid('id');
+                Route::post('/pos/shifts/{id}/close', [PosShiftController::class, 'close'])->whereUuid('id');
                 Route::get('/held-carts', [HeldCartController::class, 'index']);
                 Route::post('/held-carts', [HeldCartController::class, 'store']);
                 Route::delete('/held-carts/{id}', [HeldCartController::class, 'destroy'])->whereUuid('id');
+            });
+
+            // FR-SLREP-008: owner and unit managers switch cashier shifts on for a unit.
+            Route::middleware('require.role:owner,store-manager,unit_manager,manager')->group(function () {
+                Route::put('/operating-units/{id}/pos-settings', [PosShiftController::class, 'updateSettings'])->whereUuid('id');
             });
 
             // Sales returns, reads (BR-INV-013): whoever sees sales or raises returns —

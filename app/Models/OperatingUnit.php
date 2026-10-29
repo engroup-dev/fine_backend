@@ -26,6 +26,11 @@ final class OperatingUnit extends Model
         'status',
         'manager_user_id',
         'revenue_account_id',
+        'pos_shifts_enabled',
+    ];
+
+    protected $casts = [
+        'pos_shifts_enabled' => 'boolean',
     ];
 
     public function company(): BelongsTo

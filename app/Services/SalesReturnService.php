@@ -60,6 +60,7 @@ final class SalesReturnService
         private readonly PosDayGuard $posDayGuard,
         private readonly TreasuryBalanceService $treasuryBalances,
         private readonly SaleCheckoutService $checkoutService,
+        private readonly PosShiftService $posShifts,
     ) {}
 
     /**
@@ -137,6 +138,11 @@ final class SalesReturnService
         $cashAccount = $refundMethod === 'credit'
             ? null
             : $this->resolveTreasury($data['cash_account_id'] ?? null, $refundMethod);
+
+        // FR-SLREP-008: with shifts on, a cash refund leaves only a drawer with an open shift.
+        if ($refundMethod === 'cash') {
+            $this->posShifts->ensureShiftFor($unit, $cashAccount);
+        }
 
         return DB::transaction(function () use ($order, $unit, $requested, $refundMethod, $cashAccount, $data, $user): SalesReturn {
             $locked = SalesOrder::whereKey($order->getKey())->lockForUpdate()->firstOrFail();
@@ -256,6 +262,8 @@ final class SalesReturnService
                     'received_at' => now(),
                     'received_by_user_id' => $user->id,
                     'journal_entry_id' => $entry?->id,
+                    // Only the refund row is stamped; the original sale keeps its own shift (or none).
+                    'pos_shift_id' => $this->posShifts->shiftForPayment($locked, $refundMethod, $cashAccount, stampOrder: false),
                 ]);
 
                 $locked->amount_paid = round((float) $locked->amount_paid - $amount, 4);

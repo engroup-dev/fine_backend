@@ -57,6 +57,7 @@ final class SaleCheckoutService
         private readonly PosDayGuard $posDayGuard,
         private readonly ChequeService $chequeService,
         private readonly PriceFloorGuard $priceFloorGuard,
+        private readonly PosShiftService $posShifts,
     ) {}
 
     /**
@@ -192,6 +193,16 @@ final class SaleCheckoutService
         $splitPayments = null;
         if ($method === 'split') {
             $splitPayments = $this->resolveSplitPayments($data['payments'] ?? [], $total, $client !== null);
+        }
+
+        // FR-SLREP-008: with shifts on, cash goes only into a drawer with an open shift.
+        if ($method === 'cash') {
+            $this->posShifts->ensureShiftFor($unit, $cashAccount);
+        }
+        foreach ($splitPayments ?? [] as $portion) {
+            if ($portion['method'] === 'cash') {
+                $this->posShifts->ensureShiftFor($unit, $portion['cashAccount']);
+            }
         }
 
         $override = ! $isInternal
@@ -334,11 +345,16 @@ final class SaleCheckoutService
             throw new SalesRuleException('Cheque details are required for a cheque payment.', 'CHEQUE_DETAILS_REQUIRED');
         }
 
-        $this->posDayGuard->ensureOpen($order->operatingUnit()->firstOrFail());
+        $orderUnit = $order->operatingUnit()->firstOrFail();
+        $this->posDayGuard->ensureOpen($orderUnit);
 
         $cashAccount = in_array($method, ['cash', 'bank'], true)
             ? $this->resolveTreasury($cashAccountId, $method)
             : null;
+
+        if ($method === 'cash') {
+            $this->posShifts->ensureShiftFor($orderUnit, $cashAccount);
+        }
 
         $changeGiven = null;
         if ($method === 'cash' && $tenderedAmount !== null) {
@@ -888,6 +904,8 @@ final class SaleCheckoutService
             'tendered_amount' => $tenderedAmount !== null ? round($tenderedAmount, 4) : null,
             'change_given' => $changeGiven !== null ? round($changeGiven, 4) : null,
             'cheque_id' => $chequeId,
+            // FR-SLREP-008: cash through a drawer with an open shift belongs to that shift.
+            'pos_shift_id' => $this->posShifts->shiftForPayment($order, $method, $cashAccount),
         ]);
     }
 

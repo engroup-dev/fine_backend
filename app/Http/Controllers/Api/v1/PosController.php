@@ -9,18 +9,18 @@ use App\Models\CashAccount;
 use App\Models\Company;
 use App\Models\OperatingUnit;
 use App\Models\PosDailyClose;
+use App\Models\PosShift;
 use App\Models\SalePayment;
 use App\Models\SalesOrder;
-use App\Services\AccountingService;
+use App\Services\CashCountPostingService;
 use App\Support\CurrentUnitContext;
-use App\Support\LedgerAccounts;
-use App\Support\TreasuryAccounts;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 
 /**
  * The register day: what the counter sold and what money came in, measured
@@ -33,7 +33,7 @@ class PosController extends Controller
 {
     public function __construct(
         public CurrentUnitContext $unitContext,
-        public AccountingService $accountingService,
+        public CashCountPostingService $cashCountPosting,
     ) {}
 
     /**
@@ -54,7 +54,10 @@ class PosController extends Controller
         }
 
         $payments = $paymentsQuery->get();
-        $cashPayments = $payments->where('method', 'cash');
+        // Cash a shift already counted is reconciled at the shift close, so the
+        // drawer-count expectation leaves it out, exactly as dailyClose does.
+        $cashPayments = $payments->where('method', 'cash')->whereNull('pos_shift_id');
+        $shiftCash = round((float) $payments->where('method', 'cash')->whereNotNull('pos_shift_id')->sum('amount'), 4);
 
         $expectedCashByAccount = $cashPayments
             ->whereNotNull('cash_account_id')
@@ -94,6 +97,7 @@ class PosController extends Controller
             ])->values(),
             'expected_cash' => round((float) $cashPayments->sum('amount'), 4),
             'expected_cash_by_account' => $expectedCashByAccount,
+            'shift_cash' => $shiftCash,
         ]);
     }
 
@@ -123,11 +127,23 @@ class PosController extends Controller
      * sales returns (negative payments, BR-INV-013).
      *
      * Rule TRS-06: Differences >= 0.005 post to 625 (shortage) / 44 (surplus).
+     *
+     * FR-SLREP-008: a day run on cashier shifts closes from its closed shifts
+     * instead — see closeFromShifts(). Which way a day closes follows what the
+     * day holds, not only the live setting: a day with a closed shift is a
+     * shift day (as is one whose only cash was stamped with a shift), and a
+     * day that took cash outside shifts is a drawer-count day that counts
+     * only that unstamped cash, so a past day still closes the way it was run.
      */
     public function dailyClose(Request $request): JsonResponse
     {
+        $unit = $this->unitContext->unit();
+        $shiftsEnabled = (bool) $unit?->pos_shifts_enabled;
+        $hasShiftHistory = $unit !== null
+            && PosShift::withoutGlobalScopes()->where('operating_unit_id', $unit->id)->exists();
+
         $validated = $request->validate([
-            'counted_cash' => ['required', 'numeric', 'min:0'],
+            'counted_cash' => [Rule::requiredIf(! $shiftsEnabled && ! $hasShiftHistory), 'nullable', 'numeric', 'min:0'],
             'date' => ['sometimes', 'date_format:Y-m-d'],
             'notes' => ['nullable', 'string', 'max:255'],
             'cash_account_id' => ['nullable', 'uuid', 'exists:cash_accounts,id'],
@@ -152,10 +168,52 @@ class PosController extends Controller
             ], 422);
         }
 
+        if ($shiftsEnabled || $hasShiftHistory) {
+            // Whichever way the day closes, a shift still open on it holds the close up:
+            // it would later post its difference into a day already locked.
+            if ($refusal = $this->openShiftsRefusal($unitId, $end)) {
+                return $refusal;
+            }
+
+            $dayHasClosedShifts = PosShift::withoutGlobalScopes()
+                ->where('operating_unit_id', $unitId)
+                ->where('status', PosShift::STATUS_CLOSED)
+                ->whereBetween('closed_at', [$start, $end])
+                ->exists();
+
+            $dayHasUnstampedCash = SalePayment::withoutGlobalScopes()
+                ->where('operating_unit_id', $unitId)
+                ->where('method', 'cash')
+                ->whereNull('pos_shift_id')
+                ->whereBetween('received_at', [$start, $end])
+                ->exists();
+
+            // Cash stamped with a shift marks the day as run on shifts even
+            // when that shift closed after midnight and the setting is off now.
+            $dayHasStampedCash = SalePayment::withoutGlobalScopes()
+                ->where('operating_unit_id', $unitId)
+                ->where('method', 'cash')
+                ->whereNotNull('pos_shift_id')
+                ->whereBetween('received_at', [$start, $end])
+                ->exists();
+
+            if ($dayHasClosedShifts || (($shiftsEnabled || $dayHasStampedCash) && ! $dayHasUnstampedCash)) {
+                return $this->closeFromShifts($request, $unitId, $date, $start, $end, $validated['notes'] ?? null);
+            }
+
+            // A drawer-count day: the count is required as for any unit without shifts.
+            $validated['counted_cash'] = $request->validate([
+                'counted_cash' => ['required', 'numeric', 'min:0'],
+            ])['counted_cash'];
+        }
+
         $cashPaymentsQuery = SalePayment::withoutGlobalScopes()
             ->where('operating_unit_id', $unitId)
             ->whereBetween('received_at', [$start, $end])
-            ->where('method', 'cash');
+            ->where('method', 'cash')
+            // Cash stamped with a shift was reconciled by that shift's own
+            // count (TRS-06); a drawer count must never count it again.
+            ->when($hasShiftHistory, fn ($query) => $query->whereNull('pos_shift_id'));
 
         $distinctTreasuryIds = (clone $cashPaymentsQuery)
             ->whereNotNull('cash_account_id')
@@ -215,55 +273,18 @@ class PosController extends Controller
             $closeId = (string) Str::uuid();
             $journalEntryId = null;
 
-            if (abs($diff) >= 0.005) {
-                $treasuryCode = TreasuryAccounts::codeForId($cashAccountId);
-                $diffAmount = abs($diff);
-
-                if ($diff < 0) {
-                    // Shortage: DR 625 (عجز الخزائن) / CR treasury
-                    $lines = [
-                        [
-                            'account_code' => LedgerAccounts::CASH_SHORTAGE,
-                            'debit' => $diffAmount,
-                            'operating_unit_id' => $unitId,
-                        ],
-                        [
-                            'account_code' => $treasuryCode,
-                            'credit' => $diffAmount,
-                            'operating_unit_id' => $unitId,
-                        ],
-                    ];
-                } else {
-                    // Surplus: DR treasury / CR 44 (زيادة الخزائن)
-                    $lines = [
-                        [
-                            'account_code' => $treasuryCode,
-                            'debit' => $diffAmount,
-                            'operating_unit_id' => $unitId,
-                        ],
-                        [
-                            'account_code' => LedgerAccounts::CASH_OVERAGE,
-                            'credit' => $diffAmount,
-                            'operating_unit_id' => $unitId,
-                        ],
-                    ];
-                }
-
-                $unit = OperatingUnit::find($unitId);
-                $companyId = $unit?->company_id ?? Company::query()->value('id');
-
-                $entry = $this->accountingService->postJournal(
-                    description: "POS daily close difference: {$date}",
-                    lines: $lines,
-                    sourceType: 'PosDailyClose',
-                    sourceId: $closeId,
-                    companyId: $companyId,
-                    isManual: false,
-                    userId: $request->user()->id,
-                    entryDate: $date,
+            if ($cashAccountId !== null) {
+                $entry = $this->cashCountPosting->post(
+                    OperatingUnit::findOrFail($unitId),
+                    CashAccount::with('account')->findOrFail($cashAccountId),
+                    $expected,
+                    $counted,
+                    new PosDailyClose(['id' => $closeId]),
+                    $date,
+                    $request->user()->id,
                 );
 
-                $journalEntryId = $entry->id;
+                $journalEntryId = $entry?->id;
             }
 
             return PosDailyClose::create([
@@ -281,6 +302,64 @@ class PosController extends Controller
                 'journal_entry_id' => $journalEntryId,
             ]);
         });
+
+        return response()->json($close->load(['closedBy', 'cashAccount', 'journalEntry']), 201);
+    }
+
+    /**
+     * FR-SLREP-008: a day run on cashier shifts. Every shift begun by the end
+     * of that day must be closed first; the day then sums the shifts closed that day and
+     * posts nothing — each shift already posted its own difference (TRS-06).
+     */
+    /**
+     * OPEN_SHIFTS_EXIST when a shift begun on or before the day being closed is
+     * still open. A shift opened later does not block closing a missed earlier day.
+     */
+    private function openShiftsRefusal(string $unitId, CarbonImmutable $end): ?JsonResponse
+    {
+        $openShifts = PosShift::withoutGlobalScopes()
+            ->where('operating_unit_id', $unitId)
+            ->where('status', PosShift::STATUS_OPEN)
+            ->where('opened_at', '<=', $end)
+            ->orderBy('number')
+            ->pluck('number')
+            ->all();
+
+        if ($openShifts === []) {
+            return null;
+        }
+
+        return response()->json([
+            'message' => 'Close every open shift before closing the register day.',
+            'code' => 'OPEN_SHIFTS_EXIST',
+            'shift_numbers' => $openShifts,
+        ], 422);
+    }
+
+    private function closeFromShifts(Request $request, string $unitId, string $date, CarbonImmutable $start, CarbonImmutable $end, ?string $notes): JsonResponse
+    {
+        $shifts = PosShift::withoutGlobalScopes()
+            ->where('operating_unit_id', $unitId)
+            ->where('status', PosShift::STATUS_CLOSED)
+            ->whereBetween('closed_at', [$start, $end])
+            ->get();
+
+        $sales = $this->soldBetween($start, $end);
+
+        $close = PosDailyClose::create([
+            'operating_unit_id' => $unitId,
+            'close_date' => $date,
+            'expected_cash' => round((float) $shifts->sum('expected_cash'), 4),
+            'counted_cash' => round((float) $shifts->sum('counted_cash'), 4),
+            'difference' => round((float) $shifts->sum('difference'), 4),
+            'sales_count' => $sales->count(),
+            'total_sales' => round((float) $sales->sum('total_amount'), 4),
+            'notes' => $notes,
+            'closed_by_user_id' => $request->user()->id,
+            'cash_account_id' => null,
+            'journal_entry_id' => null,
+            'shift_based' => true,
+        ]);
 
         return response()->json($close->load(['closedBy', 'cashAccount', 'journalEntry']), 201);
     }

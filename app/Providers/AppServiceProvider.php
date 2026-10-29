@@ -22,6 +22,7 @@ use App\Models\MaterialRequest;
 use App\Models\OperatingUnit;
 use App\Models\OverheadExpense;
 use App\Models\PayrollRun;
+use App\Models\PosShift;
 use App\Models\ProductionBatch;
 use App\Models\PurchaseOrderItem;
 use App\Models\Quotation;
@@ -119,6 +120,7 @@ class AppServiceProvider extends ServiceProvider
         SalesOrder::observe(AuditObserver::class);
         SalesReturn::observe(AuditObserver::class);
         SalesReturnLine::observe(AuditObserver::class);
+        PosShift::observe(AuditObserver::class);
         JournalEntry::observe(AuditObserver::class);
         CutterWorkOrder::observe(AuditObserver::class);
 

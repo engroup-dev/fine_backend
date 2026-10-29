@@ -11,7 +11,7 @@ use Illuminate\Support\Str;
 /**
  * Server-issued document numbers — sales (S), quotations (Q), cutter work
  * orders (CWO), journal entries (JE), receipt vouchers (RV), payment vouchers (PV),
- * treasury transfers (TRF), and cheques (CHQ). One counter per type and year serves
+ * treasury transfers (TRF), cheques (CHQ), sales returns (RET) and POS shifts (SH). One counter per type and year serves
  * every unit, and it is locked while it moves, so two tills can never hand out the same number.
  */
 final class DocumentNumberService
@@ -33,6 +33,8 @@ final class DocumentNumberService
     public const CHEQUE = 'CHQ';
 
     public const SALES_RETURN = 'RET';
+
+    public const POS_SHIFT = 'SH';
 
     /**
      * The next number for a document type, e.g. S-2026-00042.

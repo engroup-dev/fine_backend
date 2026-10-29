@@ -43,6 +43,7 @@ final class SalesOrder extends Model
         'fulfillment_status',
         'payment_method',
         'cash_account_id',
+        'pos_shift_id',
         'notes',
         'sold_by_user_id',
         'price_override_by_user_id',

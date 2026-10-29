@@ -27,6 +27,7 @@ final class PosDailyClose extends Model
         'closed_by_user_id',
         'cash_account_id',
         'journal_entry_id',
+        'shift_based',
     ];
 
     protected $casts = [
@@ -36,6 +37,7 @@ final class PosDailyClose extends Model
         'difference' => 'decimal:4',
         'total_sales' => 'decimal:4',
         'sales_count' => 'integer',
+        'shift_based' => 'boolean',
     ];
 
     public function operatingUnit(): BelongsTo
