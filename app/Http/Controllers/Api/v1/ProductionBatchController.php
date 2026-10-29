@@ -18,6 +18,16 @@ use Illuminate\Validation\Rule;
 
 class ProductionBatchController extends Controller
 {
+    /**
+     * W4-05: issued chemical rows with what the batch page shows per line.
+     */
+    private const MATERIAL_RELATIONS = [
+        'materials',
+        'materials.inventoryItem:id,code,name,unit_of_measure,primary_uom,container_capacity',
+        'materials.stockLot:id,lot_number,warehouse_id',
+        'materials.issuedBy:id,name',
+    ];
+
     public function __construct(
         public ProductionBatchService $productionBatchService,
         public CurrentUnitContext $unitContext,
@@ -99,7 +109,7 @@ class ProductionBatchController extends Controller
 
     public function show(string $id): JsonResponse
     {
-        $batch = ProductionBatch::with(['operatingUnit', 'requestedByClient'])
+        $batch = ProductionBatch::with(['operatingUnit', 'requestedByClient', ...self::MATERIAL_RELATIONS])
             ->withCount(['blocks', 'scrapLots'])
             ->findOrFail($id);
 
@@ -132,6 +142,20 @@ class ProductionBatchController extends Controller
                 'message' => 'Operation number cannot change once blocks are registered — their printed labels already encode it.',
                 'code' => 'OPERATION_NUMBER_IMMUTABLE',
             ], 422);
+        }
+
+        // W4-05: once chemicals are issued, the material cost is their summed
+        // actual cost and cannot be typed over. Resending the current value
+        // (a whole-form save) changes nothing and is let through.
+        if (array_key_exists('material_cost', $validated) && $batch->materials()->exists()) {
+            if (abs((float) $validated['material_cost'] - (float) $batch->material_cost) >= 0.00005) {
+                return response()->json([
+                    'message' => 'Material cost is computed from the issued chemicals once any are issued; issue or remove materials instead of entering it.',
+                    'code' => 'MATERIAL_COST_FROM_ISSUES',
+                ], 422);
+            }
+
+            unset($validated['material_cost']);
         }
 
         // A status change must go through the lifecycle (cost apportionment and
@@ -185,6 +209,16 @@ class ProductionBatchController extends Controller
             return response()->json([
                 'message' => 'Cannot delete a batch that has registered blocks — their printed labels reference it.',
                 'code' => 'BATCH_HAS_BLOCKS',
+            ], 422);
+        }
+
+        // W4-05: issued chemicals drew their lots down and sit in 1121. A
+        // deleted batch never closes and its rows can no longer be removed, so
+        // that value would be stranded; they must be returned first.
+        if ($batch->materials()->exists()) {
+            return response()->json([
+                'message' => 'Cannot delete a batch that has issued chemicals — remove the issued materials first so they return to their lots.',
+                'code' => 'BATCH_HAS_MATERIALS',
             ], 422);
         }
 
@@ -244,5 +278,41 @@ class ProductionBatchController extends Controller
             'scrap_lots_created' => count($result['scrap_lots']),
             'scrap_volume_m3' => $result['scrap_volume_m3'],
         ], 201);
+    }
+
+    /**
+     * W4-05: issue chemicals to the batch, drawn FIFO from the unit's lots.
+     */
+    public function issueMaterials(Request $request, string $id): JsonResponse
+    {
+        $batch = ProductionBatch::findOrFail($id);
+
+        $validated = $request->validate([
+            'lines' => ['required', 'array', 'min:1'],
+            'lines.*.inventory_item_id' => ['required', 'uuid', 'exists:inventory_items,id'],
+            // The service keeps 4 decimals; anything smaller would round to zero.
+            'lines.*.quantity' => ['required', 'numeric', 'min:0.0001'],
+        ]);
+
+        $updated = $this->productionBatchService->issueMaterials($batch, $validated['lines'], $request->user()?->id);
+
+        return response()->json(
+            $updated->load(['operatingUnit', 'requestedByClient', ...self::MATERIAL_RELATIONS])->loadCount(['blocks', 'scrapLots']),
+            201,
+        );
+    }
+
+    /**
+     * W4-05: remove an issued row; its quantity returns to the lot.
+     */
+    public function removeMaterial(Request $request, string $id, string $line): JsonResponse
+    {
+        $batch = ProductionBatch::findOrFail($id);
+
+        $updated = $this->productionBatchService->removeMaterial($batch, $line, $request->user()?->id);
+
+        return response()->json(
+            $updated->load(['operatingUnit', 'requestedByClient', ...self::MATERIAL_RELATIONS])->loadCount(['blocks', 'scrapLots'])
+        );
     }
 }

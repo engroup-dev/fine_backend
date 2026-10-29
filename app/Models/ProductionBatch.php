@@ -63,6 +63,15 @@ final class ProductionBatch extends Model
     }
 
     /**
+     * W4-05: chemicals issued to the run, one row per lot drawn. Their summed
+     * total_cost is the batch's material_cost.
+     */
+    public function materials(): HasMany
+    {
+        return $this->hasMany(ProductionBatchMaterial::class);
+    }
+
+    /**
      * Every lot the run produced — serialized blocks and zero-cost scrap alike.
      */
     public function stockLots(): HasMany

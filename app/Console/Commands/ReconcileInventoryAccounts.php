@@ -12,7 +12,9 @@ use App\Models\Account;
 use App\Models\JournalEntry;
 use App\Models\JournalLine;
 use App\Models\OperatingUnit;
+use App\Models\ProductionBatchMaterial;
 use App\Services\AccountingService;
+use App\Services\ProductionBatchService;
 use App\Support\CompanyClock;
 use App\Support\InventoryAccounts;
 use DateTimeImmutable;
@@ -49,15 +51,19 @@ use Illuminate\Support\Facades\DB;
  * PeriodGuard (ACC-11) applies, and a second run finds nothing to post.
  *
  * Guards and warnings:
- *  - Foam production consumption is not posted: raw-material lots are never
- *    drawn down by production, while the close credits 1121 with the batch's
- *    material cost. 111 and its lots therefore still agree (both carry the
- *    consumed value) and reconcile leaves them alone. The gap is measured
+ *  - Foam consumption: since W4-05, chemicals issued to a batch draw their
+ *    lots down AND post DR 1121 / CR 111 together, so issued batches leave no
+ *    gap. A batch closed on a hand-typed material cost (no issued rows, as
+ *    every batch was before W4-05) still credits 1121 with nothing posted
+ *    out of 111 and no lot drawn down, so 111 and its lots both keep the
+ *    consumed value and reconcile leaves them alone. The gap is measured
  *    directly (close credits on 1121 against 111 → 1121 consumption entries,
  *    not the 1121 balance, which overhead also feeds) and reported. --post
  *    refuses a unit only when that gap exists AND 111 runs above its lots,
  *    because then consumed lots were likely written down by hand and the
- *    surplus belongs to 1121, not 52 (remedy: DR 1121 / CR 111).
+ *    surplus belongs to 1121, not 52 (remedy: DR 1121 / CR 111 for those
+ *    hand-costed closes only; never for a batch whose chemicals were issued,
+ *    which is already posted).
  *  - Blocks consumed through a cut-remnant decision with no remnant restocked
  *    (StockLotService::processCutRemnant) leave their value on the lot
  *    account with no entry; --post expenses it to 52, and the run says so.
@@ -201,7 +207,7 @@ final class ReconcileInventoryAccounts extends Command
             if ($surplus >= self::THRESHOLD && ($unposted[$unit->id] ?? 0.0) >= self::THRESHOLD) {
                 $failed++;
                 $this->error(sprintf(
-                    '%s: refused — 111 carries %s more than its lots while %s of material consumed by closed foam batches was never posted out of 111. Production does not draw raw-material lots down, so a surplus here usually means consumed lots were written down by hand with no entry: that value belongs to 1121, not 52. Post it DR 1121 / CR 111 (the lots are already down, so an entry alone is right), then run again.',
+                    '%s: refused — 111 carries %s more than its lots while %s of material consumed by closed foam batches was never posted out of 111. That gap comes only from batches closed on a hand-typed material cost (chemicals issued to a batch already post DR 1121 / CR 111 and draw their lots down), so a surplus here usually means those consumed lots were written down by hand with no entry: that value belongs to 1121, not 52. Post DR 1121 / CR 111 for those hand-costed closes only (the lots are already down, so an entry alone is right; never for a batch whose chemicals were issued, which would post it twice), then run again.',
                     $unit->name,
                     $this->money($surplus),
                     $this->money($unposted[$unit->id]),
@@ -268,13 +274,19 @@ final class ReconcileInventoryAccounts extends Command
      * absorption (DR 1121 / CR 54) also feeds:
      *
      *   closed   = net credit on 1121 of entries sourced from a production
-     *              batch (the close; a reversal keeps the source and nets out)
+     *              batch (the close; a reversal keeps the source and nets out),
+     *              leaving out batches that have issued chemicals
      *   consumed = net credit on 111 of entries that also carry a 1121 line
-     *              for the same unit (a consumption entry DR 1121 / CR 111)
+     *              for the same unit (a consumption entry DR 1121 / CR 111),
+     *              leaving out the W4-05 issue entries
      *
-     * Production does not draw raw-material lots down today, so in the normal
-     * case 111 and its lots still agree and reconcile leaves them alone; the
-     * gap only matters when 111 also runs above its lots (see handle()).
+     * Batches with issued chemicals balance themselves (their issues post
+     * DR 1121 / CR 111 and draw the lots down; their close moves the same
+     * value on), and their issues may belong to batches still open, so they
+     * are left out of both sides: the gap is the hand-costed closes alone.
+     * Those never drew lots down, so in the normal case 111 and its lots still
+     * agree and reconcile leaves them alone; the gap only matters when 111
+     * also runs above its lots (see handle()).
      *
      * @param  Collection<int, OperatingUnit>  $units
      * @param  list<string>  $unitIds
@@ -292,7 +304,10 @@ final class ReconcileInventoryAccounts extends Command
             ->posted()
             ->where('account_id', $ids['1121'])
             ->whereIn('operating_unit_id', $unitIds)
-            ->whereIn('journal_entry_id', JournalEntry::query()->where('source_document_type', 'ProductionBatch')->select('id'))
+            ->whereIn('journal_entry_id', JournalEntry::query()
+                ->where('source_document_type', 'ProductionBatch')
+                ->whereNotIn('source_document_id', ProductionBatchMaterial::query()->select('production_batch_id'))
+                ->select('id'))
             ->groupBy('operating_unit_id')
             ->selectRaw('operating_unit_id, SUM(credit) - SUM(debit) AS amount')
             ->toBase()
@@ -302,6 +317,9 @@ final class ReconcileInventoryAccounts extends Command
             ->posted()
             ->where('account_id', $ids['111'])
             ->whereIn('operating_unit_id', $unitIds)
+            ->whereNotIn('journal_entry_id', JournalEntry::query()
+                ->where('source_document_type', ProductionBatchService::MATERIAL_SOURCE_TYPE)
+                ->select('id'))
             ->whereExists(fn (Builder $wip) => $wip
                 ->selectRaw('1')
                 ->from('journal_lines as wip')
@@ -321,7 +339,7 @@ final class ReconcileInventoryAccounts extends Command
             if ($gap >= self::THRESHOLD) {
                 $unposted[$unit->id] = $gap;
                 $this->warn(sprintf(
-                    '%s: %s of material consumed by closed foam batches was never posted out of 111 (production does not draw raw-material lots down yet), so 111 and its lots both still carry it and 1121 carries the credit. Reconcile leaves that alone; --post refuses the unit only if 111 also runs above its lots.',
+                    '%s: %s of material consumed by closed foam batches was never posted out of 111 (batches closed on a hand-typed material cost; issue the chemicals to a batch instead, which draws the lots down and posts DR 1121 / CR 111), so 111 and its lots both still carry it and 1121 carries the credit. Reconcile leaves that alone; --post refuses the unit only if 111 also runs above its lots.',
                     $unit->name,
                     $this->money($gap),
                 ));

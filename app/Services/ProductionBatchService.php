@@ -6,13 +6,18 @@ namespace App\Services;
 
 use App\Enums\ProductionBatchStatus;
 use App\Exceptions\InvalidStateTransitionException;
+use App\Exceptions\LedgerRuleException;
+use App\Models\InventoryItem;
 use App\Models\InventoryMovement;
 use App\Models\ItemStockLevel;
+use App\Models\JournalEntry;
 use App\Models\MaterialRequest;
 use App\Models\ProductionBatch;
+use App\Models\ProductionBatchMaterial;
 use App\Models\Scopes\OperatingUnitScope;
 use App\Models\StockLot;
 use App\Support\InventoryAccounts;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use InvalidArgumentException;
 
@@ -21,7 +26,397 @@ class ProductionBatchService
     public function __construct(
         private readonly AccountingService $accountingService,
         private readonly MaterialResolutionService $materialResolution,
+        private readonly StockLotService $stockLotService,
     ) {}
+
+    /** Journal source of an issued material row (one entry per row, reversed on removal). */
+    public const MATERIAL_SOURCE_TYPE = 'ProductionBatchMaterial';
+
+    /**
+     * W4-05 (decision #11): issue chemicals to a batch that is not closed.
+     *
+     * Each line draws FIFO (oldest lot first) across the item's available lots
+     * in the batch unit's warehouses, through StockLotService::drawFromLot as a
+     * `consumption` movement, so open barrels and recovered empties are handled
+     * there. Every lot drawn becomes one row at that lot's actual cost, and its
+     * value moves into work in process:
+     *
+     *   DR 1121 WIP — Foam Production / CR the lot's account (INV-11: 111)
+     *
+     * Sufficiency is checked for the whole request before anything is drawn,
+     * so a short chemical refuses the issue rather than leaving it half done.
+     * The batch's material_cost becomes the sum of its issued rows.
+     *
+     * @param  array<int, array{inventory_item_id: string, quantity: float|int|string}>  $lines
+     */
+    public function issueMaterials(ProductionBatch $batch, array $lines, ?string $userId = null): ProductionBatch
+    {
+        if ($lines === []) {
+            throw new LedgerRuleException('An issue needs at least one material line.', 'INVALID_QUANTITY');
+        }
+
+        return DB::transaction(function () use ($batch, $lines, $userId): ProductionBatch {
+            $locked = ProductionBatch::whereKey($batch->getKey())->lockForUpdate()->firstOrFail();
+            $this->guardOpenForMaterials($locked);
+
+            $required = [];
+            foreach ($lines as $line) {
+                $quantity = round((float) $line['quantity'], 4);
+
+                if ($quantity <= 0) {
+                    throw new LedgerRuleException('An issued quantity must be at least 0.0001.', 'INVALID_QUANTITY');
+                }
+
+                $required[$line['inventory_item_id']] = round(($required[$line['inventory_item_id']] ?? 0) + $quantity, 4);
+            }
+
+            $this->guardRawMaterials(array_map('strval', array_keys($required)));
+
+            /** @var array<string, Collection<int, StockLot>> $lotsByItem */
+            $lotsByItem = [];
+            $shortfalls = [];
+
+            foreach ($required as $itemId => $quantity) {
+                $lotsByItem[$itemId] = $this->availableLotsFor((string) $itemId, $locked->operating_unit_id);
+                $available = round((float) $lotsByItem[$itemId]->sum('quantity'), 4);
+
+                if ($available < $quantity) {
+                    $item = InventoryItem::withTrashed()->find($itemId);
+                    $shortfalls[] = [
+                        'inventory_item_id' => $itemId,
+                        'code' => $item?->code,
+                        'required' => $quantity,
+                        'available' => $available,
+                    ];
+                }
+            }
+
+            if ($shortfalls !== []) {
+                $names = implode('، ', array_map(
+                    fn (array $s): string => "{$s['code']}: need {$s['required']}, have {$s['available']}",
+                    $shortfalls,
+                ));
+
+                throw new LedgerRuleException(
+                    "Stock cannot cover the issue to operation {$locked->operation_number} — {$names}.",
+                    'INSUFFICIENT_STOCK',
+                    ['shortfalls' => $shortfalls],
+                );
+            }
+
+            /** @var array<string, float> $remainingByLot what this request has not yet taken from each lot */
+            $remainingByLot = [];
+            foreach ($lotsByItem as $lots) {
+                foreach ($lots as $lot) {
+                    $remainingByLot[$lot->id] = (float) $lot->quantity;
+                }
+            }
+
+            foreach ($lines as $line) {
+                $itemId = $line['inventory_item_id'];
+                $remaining = round((float) $line['quantity'], 4);
+
+                foreach ($lotsByItem[$itemId] as $lot) {
+                    if ($remaining <= 0) {
+                        break;
+                    }
+
+                    $take = round(min($remainingByLot[$lot->id], $remaining), 4);
+                    if ($take <= 0) {
+                        continue;
+                    }
+
+                    $remainingByLot[$lot->id] = round($remainingByLot[$lot->id] - $take, 4);
+                    $remaining = round($remaining - $take, 4);
+
+                    $this->issueFromLot($locked, $lot, $take, $userId);
+                }
+            }
+
+            $this->syncMaterialCost($locked);
+
+            return $locked->fresh();
+        });
+    }
+
+    /**
+     * W4-05: remove an issued row from a batch that is not closed. The
+     * quantity goes back to its lot (with the empty containers it had freed,
+     * if any), and the row's journal entry is reversed (ACC-13).
+     */
+    public function removeMaterial(ProductionBatch $batch, string $materialId, ?string $userId = null): ProductionBatch
+    {
+        return DB::transaction(function () use ($batch, $materialId, $userId): ProductionBatch {
+            $locked = ProductionBatch::whereKey($batch->getKey())->lockForUpdate()->firstOrFail();
+            $this->guardOpenForMaterials($locked);
+
+            $material = ProductionBatchMaterial::where('production_batch_id', $locked->id)
+                ->whereKey($materialId)
+                ->lockForUpdate()
+                ->firstOrFail();
+
+            $lot = StockLot::withoutGlobalScopes()->whereKey($material->stock_lot_id)->lockForUpdate()->firstOrFail();
+            $item = InventoryItem::withTrashed()->find($lot->inventory_item_id);
+            $quantity = (float) $material->quantity;
+            $quantityAfter = round((float) $lot->quantity + $quantity, 4);
+            $unitId = $locked->operating_unit_id;
+
+            // An open barrel refilled by the return occupies a container again,
+            // so the empty it had freed comes back off the empties stock.
+            $containersBefore = (int) ceil((float) $lot->container_quantity);
+            $containersAfter = $containersBefore;
+            if ($item !== null && $item->tracksContainers()) {
+                $containersAfter = max($containersBefore, (int) ceil($quantityAfter / (float) $item->container_capacity));
+            }
+            $refilled = $containersAfter - $containersBefore;
+
+            if ($refilled > 0 && $item?->empty_container_item_id !== null) {
+                $this->takeBackEmptyContainers($locked, $lot, $item, $refilled);
+            }
+
+            $lot->quantity = $quantityAfter;
+            $lot->container_quantity = $containersAfter;
+            if ($lot->status === 'consumed') {
+                $lot->status = 'available';
+            }
+            $lot->save();
+
+            InventoryMovement::create([
+                'operating_unit_id' => $unitId,
+                'stock_lot_id' => $lot->id,
+                'to_warehouse_id' => $lot->warehouse_id,
+                'sku' => $item?->code ?? 'ITEM',
+                'movement_type' => 'consumption',
+                'quantity_delta' => $quantity,
+                'unit_cost' => (float) $material->unit_cost,
+                'reason' => 'foam_material_returned',
+                'reference_document_type' => 'ProductionBatch',
+                'reference_id' => $locked->id,
+            ]);
+
+            $entry = JournalEntry::query()
+                ->where('source_document_type', self::MATERIAL_SOURCE_TYPE)
+                ->where('source_document_id', $material->id)
+                ->whereNull('reversal_of_id')
+                ->first();
+
+            if ($entry !== null) {
+                $this->accountingService->reverseEntry(
+                    $entry,
+                    null,
+                    "إرجاع مادة من عملية الإسفنج {$locked->operation_number}",
+                    $userId,
+                );
+            }
+
+            $material->delete();
+
+            $this->syncMaterialCost($locked);
+
+            return $locked->fresh();
+        });
+    }
+
+    /**
+     * Available lots of an item in the unit's warehouses, oldest first, locked.
+     *
+     * @return Collection<int, StockLot>
+     */
+    private function availableLotsFor(string $itemId, string $unitId): Collection
+    {
+        // withoutGlobalScopes on both levels, as in StockIssueService: the lots
+        // are the batch unit's, whatever unit the caller's context names.
+        return StockLot::withoutGlobalScopes()
+            ->where('inventory_item_id', $itemId)
+            ->where('status', 'available')
+            ->where('quantity', '>', 0)
+            ->whereHas('warehouse', fn ($query) => $query->withoutGlobalScopes()->where('operating_unit_id', $unitId))
+            ->orderBy('created_at')
+            ->orderBy('id')
+            ->lockForUpdate()
+            ->get();
+    }
+
+    /**
+     * Draw one portion from one lot and record it: the row, the consumption
+     * movement (via drawFromLot) and the DR 1121 / CR lot-account entry.
+     */
+    private function issueFromLot(ProductionBatch $batch, StockLot $lot, float $quantity, ?string $userId): ProductionBatchMaterial
+    {
+        $unitCost = round((float) $lot->unit_cost, 4);
+        $totalCost = round($quantity * $unitCost, 4);
+
+        $material = ProductionBatchMaterial::create([
+            'production_batch_id' => $batch->id,
+            'inventory_item_id' => $lot->inventory_item_id,
+            'stock_lot_id' => $lot->id,
+            'quantity' => $quantity,
+            'unit_cost' => $unitCost,
+            'total_cost' => $totalCost,
+            'issued_by' => $userId,
+        ]);
+
+        $draw = $this->stockLotService->drawFromLot(
+            $lot,
+            $quantity,
+            'foam_material_issue',
+            'ProductionBatch',
+            $batch->id,
+            'consumption',
+        );
+
+        $material->inventory_movement_id = $draw['movement']->id;
+        $material->save();
+
+        // A zero-cost lot moves no value, and postJournal refuses an empty entry.
+        if ($totalCost > 0) {
+            $code = $draw['lot']->inventoryItem?->code ?? 'ITEM';
+
+            $this->accountingService->postJournal(
+                "Foam operation {$batch->operation_number}: {$quantity} {$code} issued",
+                [
+                    [
+                        'account_code' => '1121', // WIP — Foam Production
+                        'debit' => $totalCost,
+                        'operating_unit_id' => $batch->operating_unit_id,
+                        'memo' => "{$code} — {$lot->lot_number}",
+                    ],
+                    [
+                        'account_code' => InventoryAccounts::forLot($lot),
+                        'credit' => $totalCost,
+                        'operating_unit_id' => $batch->operating_unit_id,
+                        'memo' => "{$code} — {$lot->lot_number}",
+                    ],
+                ],
+                self::MATERIAL_SOURCE_TYPE,
+                $material->id,
+                $batch->operatingUnit?->company_id,
+                false,
+                $userId,
+            );
+        }
+
+        return $material;
+    }
+
+    /**
+     * Put back the empties a returned quantity refills, oldest empties lot in
+     * the lot's warehouse first. If they are no longer there, the return is
+     * refused: the barrels would otherwise be counted twice.
+     */
+    private function takeBackEmptyContainers(ProductionBatch $batch, StockLot $lot, InventoryItem $item, int $count): void
+    {
+        $empties = StockLot::withoutGlobalScopes()
+            ->where('inventory_item_id', $item->empty_container_item_id)
+            ->where('warehouse_id', $lot->warehouse_id)
+            ->where('status', 'available')
+            ->where('quantity', '>', 0)
+            ->orderBy('created_at')
+            ->orderBy('id')
+            ->lockForUpdate()
+            ->get();
+
+        $available = (int) floor((float) $empties->sum('quantity'));
+
+        if ($available < $count) {
+            throw new LedgerRuleException(
+                "Returning this quantity refills {$count} container(s) of {$item->code}, but only {$available} empty container(s) are in stock in that warehouse to take back.",
+                'EMPTY_CONTAINERS_MISSING',
+                ['required' => $count, 'available' => $available],
+            );
+        }
+
+        $remaining = $count;
+        $emptyItem = InventoryItem::withTrashed()->find($item->empty_container_item_id);
+
+        foreach ($empties as $empty) {
+            if ($remaining <= 0) {
+                break;
+            }
+
+            $take = (int) min(floor((float) $empty->quantity), $remaining);
+            if ($take <= 0) {
+                continue;
+            }
+
+            $remaining -= $take;
+
+            $empty->quantity = round((float) $empty->quantity - $take, 4);
+            $empty->container_quantity = max(0, round((float) $empty->container_quantity - $take, 4));
+            if ((float) $empty->quantity <= 0) {
+                $empty->quantity = 0;
+                $empty->status = 'consumed';
+            }
+            $empty->save();
+
+            InventoryMovement::create([
+                'operating_unit_id' => $batch->operating_unit_id,
+                'stock_lot_id' => $empty->id,
+                'from_warehouse_id' => $empty->warehouse_id,
+                'sku' => $emptyItem?->code ?? 'EMPTY-CONTAINER',
+                'movement_type' => 'byproduct_yield',
+                'quantity_delta' => -$take,
+                'unit_cost' => 0,
+                'reason' => 'empty_container_refilled',
+                'reference_document_type' => 'ProductionBatch',
+                'reference_id' => $batch->id,
+            ]);
+        }
+    }
+
+    /**
+     * Only raw materials (the chemicals, whose lots sit in 111) are issued to
+     * a batch. Foam blocks — this batch's own included — slices, finished
+     * goods and containers are never drawn into 1121.
+     *
+     * @param  list<string>  $itemIds
+     */
+    private function guardRawMaterials(array $itemIds): void
+    {
+        $items = InventoryItem::withTrashed()->whereIn('id', $itemIds)->get(['id', 'code', 'item_type'])->keyBy('id');
+
+        $refused = [];
+        foreach ($itemIds as $itemId) {
+            $item = $items->get($itemId);
+            if ($item === null || $item->item_type !== 'raw_material') {
+                $refused[] = ['inventory_item_id' => $itemId, 'code' => $item?->code, 'item_type' => $item?->item_type];
+            }
+        }
+
+        if ($refused !== []) {
+            $codes = implode('، ', array_map(fn (array $r): string => (string) ($r['code'] ?? $r['inventory_item_id']), $refused));
+
+            throw new LedgerRuleException(
+                "Only raw materials can be issued to a foam operation — {$codes} is not a raw material.",
+                'MATERIAL_NOT_RAW',
+                ['items' => $refused],
+            );
+        }
+    }
+
+    /**
+     * Issued materials are fixed once the batch is closed: its cost has been
+     * apportioned onto blocks and posted to finished goods.
+     */
+    private function guardOpenForMaterials(ProductionBatch $batch): void
+    {
+        if ($batch->status === ProductionBatchStatus::Closed) {
+            throw new InvalidStateTransitionException(
+                "Operation {$batch->operation_number} is closed; its materials can no longer change."
+            );
+        }
+    }
+
+    /**
+     * W4-05: a batch with issued materials costs exactly what was issued, so
+     * removing its last row leaves zero (a hand-entered cost is only for
+     * batches that never had chemicals issued).
+     */
+    private function syncMaterialCost(ProductionBatch $batch): void
+    {
+        $batch->material_cost = round((float) $batch->materials()->sum('total_cost'), 4);
+        $batch->save();
+    }
 
     /**
      * Compose the human-readable block label: {sequence}-{pressure}-{operation}.
@@ -82,6 +477,11 @@ class ProductionBatchService
                         ? "Operation {$locked->operation_number} is closed and cannot change state."
                         : "Cannot move operation {$locked->operation_number} from {$current->value} to {$target->value}; expected ".implode(' or ', $allowed).'.'
                 );
+            }
+
+            // W4-05: once chemicals are issued, the batch costs what was issued.
+            if ($target === ProductionBatchStatus::Closed && $locked->materials()->exists()) {
+                $locked->material_cost = round((float) $locked->materials()->sum('total_cost'), 4);
             }
 
             $this->guardTransition($locked, $target);
@@ -227,6 +627,16 @@ class ProductionBatchService
     private function guardTransition(ProductionBatch $batch, ProductionBatchStatus $target): void
     {
         if ($target === ProductionBatchStatus::Closed && (float) $batch->material_cost <= 0) {
+            // W4-05: issued rows fix the cost (it cannot be typed over), so a
+            // batch whose chemicals all came from zero-cost lots says so
+            // rather than asking for a cost the API would refuse.
+            if ($batch->materials()->exists()) {
+                throw new LedgerRuleException(
+                    "Operation {$batch->operation_number} cannot close: its issued chemicals all came from lots with no recorded cost, so it has no material cost to carry onto its blocks. Remove the issued materials and enter the material cost by hand, then close.",
+                    'MATERIAL_COST_ZERO_FROM_ISSUES',
+                );
+            }
+
             throw new InvalidStateTransitionException(
                 "Operation {$batch->operation_number} cannot close without a material cost — enter it first so its blocks carry value."
             );

@@ -25,6 +25,7 @@ use App\Models\OverheadExpense;
 use App\Models\PayrollRun;
 use App\Models\PosShift;
 use App\Models\ProductionBatch;
+use App\Models\ProductionBatchMaterial;
 use App\Models\PurchaseOrderItem;
 use App\Models\Quotation;
 use App\Models\Role;
@@ -94,6 +95,7 @@ class AppServiceProvider extends ServiceProvider
         ItemStockLevel::observe(AuditObserver::class);
         WarehouseTransfer::observe(AuditObserver::class);
         ProductionBatch::observe(AuditObserver::class);
+        ProductionBatchMaterial::observe(AuditObserver::class);
 
         // Phase 08: overhead and fixed assets carry money — every change is
         // audit-logged like the inventory value carriers above.

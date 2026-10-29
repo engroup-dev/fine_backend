@@ -337,6 +337,58 @@ test('reconcile --post refuses a unit whose 111 surplus may be unposted foam con
         ->assertSuccessful();
 });
 
+test('chemicals issued to an open batch do not hide the gap a hand-costed close left', function () {
+    // A legacy hand-costed close (300, lots never drawn) whose consumed lot
+    // was then written down by hand (500 → 200, no entry): 111 runs 300 above
+    // its lots and that surplus belongs to 1121.
+    $roll = ($this->intake)($this->raw, 10, 50);
+    $roll->update(['quantity' => 4]);
+    ($this->lot)($this->foam, 1, 300);
+    postFoamClose($this, 300);
+
+    // W4-05: 500 of chemicals issued to a batch that is still open
+    // (DR 1121 / CR 111, lots drawn down), which must not offset the gap.
+    ($this->intake)($this->raw, 10, 50);
+    $open = ProductionBatch::create([
+        'operating_unit_id' => $this->unitA->id, 'operation_number' => 590, 'bun_width_m' => 2.4, 'status' => 'planned',
+    ]);
+    ($this->api)()->postJson("/api/v1/production-batches/{$open->id}/materials", [
+        'lines' => [['inventory_item_id' => $this->raw->id, 'quantity' => 10]],
+    ])->assertStatus(201)->assertJsonPath('material_cost', '500.0000');
+    $entries = JournalEntry::count();
+
+    $this->artisan('inventory:reconcile-accounts')
+        ->expectsOutputToContain('300.00 of material consumed by closed foam batches was never posted out of 111')
+        ->assertSuccessful();
+
+    $this->artisan('inventory:reconcile-accounts', ['--post' => true])
+        ->expectsOutputToContain('refused')
+        ->assertFailed();
+
+    expect(JournalEntry::count())->toBe($entries);
+});
+
+test('a closed batch whose chemicals were issued leaves no unposted-consumption gap', function () {
+    ($this->intake)($this->raw, 10, 50);
+    $batch = ProductionBatch::create([
+        'operating_unit_id' => $this->unitA->id, 'operation_number' => 591, 'bun_width_m' => 2.4, 'status' => 'graded',
+    ]);
+    ($this->api)()->postJson("/api/v1/production-batches/{$batch->id}/materials", [
+        'lines' => [['inventory_item_id' => $this->raw->id, 'quantity' => 4]],
+    ])->assertStatus(201);
+    // The close as the service posts it for this batch: DR 1131 / CR 1121 200.
+    ($this->lot)($this->foam, 1, 200);
+    app(AccountingService::class)->postJournal('Foam operation closed', [
+        ['account_code' => '1131', 'debit' => 200, 'operating_unit_id' => $this->unitA->id],
+        ['account_code' => '1121', 'credit' => 200, 'operating_unit_id' => $this->unitA->id],
+    ], 'ProductionBatch', $batch->id);
+
+    $this->artisan('inventory:reconcile-accounts')
+        ->doesntExpectOutputToContain('never posted out of 111')
+        ->expectsOutputToContain('nothing to post')
+        ->assertSuccessful();
+});
+
 test('reconcile --post corrects a foam unit with unposted consumption when 111 is not above its lots', function () {
     // The case this release exists for: a foam block sold before INV-11
     // credited 111 instead of 1131. The batch's consumption is unposted too,

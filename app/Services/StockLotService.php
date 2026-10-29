@@ -262,7 +262,10 @@ class StockLotService
      * the column stays authoritative so a physical recount or a damaged container
      * sticks.
      *
-     * @return array{lot: StockLot, emptied: int, drawn: float}
+     * The draw is an `issue` movement unless the caller names another type —
+     * production draws chemicals as `consumption` (W4-05).
+     *
+     * @return array{lot: StockLot, emptied: int, drawn: float, movement: InventoryMovement}
      */
     public function drawFromLot(
         StockLot $lot,
@@ -270,12 +273,13 @@ class StockLotService
         string $reason,
         ?string $referenceType = null,
         ?string $referenceId = null,
+        string $movementType = 'issue',
     ): array {
         if ($drawQuantity <= 0) {
             throw new InvalidArgumentException('Draw quantity must be greater than zero.');
         }
 
-        return DB::transaction(function () use ($lot, $drawQuantity, $reason, $referenceType, $referenceId): array {
+        return DB::transaction(function () use ($lot, $drawQuantity, $reason, $referenceType, $referenceId, $movementType): array {
             $locked = StockLot::whereKey($lot->getKey())->lockForUpdate()->firstOrFail();
 
             if ($locked->status !== 'available') {
@@ -316,12 +320,12 @@ class StockLotService
 
             $unitId = $locked->warehouse?->operating_unit_id;
 
-            InventoryMovement::create([
+            $movement = InventoryMovement::create([
                 'operating_unit_id' => $unitId,
                 'stock_lot_id' => $locked->id,
                 'from_warehouse_id' => $locked->warehouse_id,
                 'sku' => $item?->code ?? 'ITEM',
-                'movement_type' => 'issue',
+                'movement_type' => $movementType,
                 'quantity_delta' => -$drawQuantity,
                 'unit_cost' => (float) $locked->unit_cost,
                 'reason' => $reason,
@@ -363,6 +367,7 @@ class StockLotService
                 'lot' => $locked->fresh(['inventoryItem', 'warehouse']),
                 'emptied' => $emptied,
                 'drawn' => $drawQuantity,
+                'movement' => $movement,
             ];
         });
     }

@@ -299,6 +299,8 @@ Route::prefix('v1')->group(function () {
             Route::middleware(['require.role:owner,foam-manager,foam-operator,unit_manager,manager', 'require.module:view-foam,edit-foam'])->group(function () {
                 Route::post('/production-batches/{id}/blocks', [ProductionBatchController::class, 'registerBlocks']);
                 Route::post('/production-batches/{id}/transition', [ProductionBatchController::class, 'transition']);
+                Route::post('/production-batches/{id}/materials', [ProductionBatchController::class, 'issueMaterials']);
+                Route::delete('/production-batches/{id}/materials/{line}', [ProductionBatchController::class, 'removeMaterial']);
                 Route::apiResource('production-batches', ProductionBatchController::class);
             });
 

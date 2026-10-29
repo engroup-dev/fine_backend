@@ -17,15 +17,16 @@ use App\Models\StockLot;
  * most flows posted there (111 for every unit), so a foam block entered
  * through 1131 and left through 111.
  *
- * Known gaps, outside this rule: foam production consumption is not posted.
- * Raw-material lots are never drawn down by production, while foam close
- * credits 1121 with the batch's material cost, so 111 and its lots both keep
- * the consumed value and 1121 carries the credit. The fix is a consumption
- * flow that draws the lots down AND posts DR 1121 / CR 111 together; a
- * GL-only entry would leave 111 below its lots. A block consumed through a
- * cut-remnant decision with no remnant restocked leaves its value on its
- * account with no entry, and an item whose type changes while it holds
- * stock moves its lots to another account with no entry too.
+ * Known gaps, outside this rule: a foam batch closed on a hand-typed
+ * material cost (no chemicals issued to it) credits 1121 with that cost while
+ * no raw-material lot is drawn down and nothing is posted out of 111, so 111
+ * and its lots both keep the consumed value and 1121 carries the credit.
+ * Chemicals issued to a batch (W4-05, ProductionBatchService::issueMaterials)
+ * draw the lots down AND post DR 1121 / CR 111 together, so issued batches
+ * have no gap; a GL-only entry would leave 111 below its lots. A block
+ * consumed through a cut-remnant decision with no remnant restocked leaves
+ * its value on its account with no entry, and an item whose type changes
+ * while it holds stock moves its lots to another account with no entry too.
  *
  * WIP accounts (1121 / 1122 / 1123) are not lot accounts: value parked in
  * production (a block reserved by a cutter work order sits in 1122) is posted
