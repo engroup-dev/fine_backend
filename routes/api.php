@@ -434,14 +434,15 @@ Route::prefix('v1')->group(function () {
             });
 
             // Stock counts (W4-01, decision #13), reads: the counters and the approvers.
-            Route::middleware(['require.role:owner,inventory-manager,unit_manager,manager,accounting-manager', 'require.module:view-inventory'])->group(function () {
+            // A unit's own manager role (foam, cutter, furniture, store, procurement) counts its warehouses.
+            Route::middleware(['require.role:owner,inventory-manager,unit_manager,manager,foam-manager,cutter-manager,furniture-manager,store-manager,procurement-manager,accounting-manager', 'require.module:view-inventory'])->group(function () {
                 Route::get('/stock-counts', [StockCountController::class, 'index']);
                 Route::get('/stock-counts/{id}', [StockCountController::class, 'show'])->whereUuid('id');
                 Route::get('/stock-counts/{id}/sheet', [StockCountController::class, 'sheet'])->whereUuid('id');
             });
 
             // Stock counts: an inventory manager or unit manager opens and enters a count.
-            Route::middleware(['require.role:owner,inventory-manager,unit_manager,manager', 'require.module:view-inventory,edit-inventory'])->group(function () {
+            Route::middleware(['require.role:owner,inventory-manager,unit_manager,manager,foam-manager,cutter-manager,furniture-manager,store-manager,procurement-manager', 'require.module:view-inventory,edit-inventory'])->group(function () {
                 Route::post('/stock-counts', [StockCountController::class, 'store']);
                 Route::put('/stock-counts/{id}', [StockCountController::class, 'update'])->whereUuid('id');
                 Route::delete('/stock-counts/{id}', [StockCountController::class, 'destroy'])->whereUuid('id');
@@ -451,7 +452,7 @@ Route::prefix('v1')->group(function () {
             });
 
             // Stock counts: the counters or an approver may cancel one.
-            Route::middleware(['require.role:owner,inventory-manager,unit_manager,manager,accounting-manager', 'require.module:view-inventory,edit-inventory|approve-stock-counts'])->group(function () {
+            Route::middleware(['require.role:owner,inventory-manager,unit_manager,manager,foam-manager,cutter-manager,furniture-manager,store-manager,procurement-manager,accounting-manager', 'require.module:view-inventory,edit-inventory|approve-stock-counts'])->group(function () {
                 Route::post('/stock-counts/{id}/cancel', [StockCountController::class, 'cancel'])->whereUuid('id');
             });
 

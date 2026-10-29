@@ -56,6 +56,7 @@ beforeEach(function (): void {
 
         return $user;
     };
+    $this->makeUser = $makeUser;
     $this->counter = $makeUser('inventory-manager', $this->unit->id);
     $this->accountant = $makeUser('accounting-manager', null);
     $this->owner = $makeUser('owner', null);
@@ -827,4 +828,15 @@ test('a found lot number skips one already taken in another unit', function () {
     $line = collect($approved['lines'])->firstWhere('is_found', true);
 
     expect($line['new_lot_number'])->toBe('LOT-FAB-1-20261020-02');
+});
+
+test('a unit\'s own manager role (store-manager) opens and enters a count of its warehouse', function (): void {
+    $storeManager = ($this->makeUser)('store-manager', $this->unit->id);
+    ($this->lot)($this->raw, 10, 7);
+
+    $count = ($this->as)($storeManager)->postJson('/api/v1/stock-counts', ['warehouse_id' => $this->warehouse->id])
+        ->assertCreated()
+        ->json();
+
+    ($this->as)($storeManager)->getJson("/api/v1/stock-counts/{$count['id']}")->assertOk();
 });
