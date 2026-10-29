@@ -20,6 +20,7 @@ final class InventoryItem extends Model
         'category_id',
         'name',
         'code',
+        'barcode',
         'item_type',
         'unit_of_measure',
         'primary_uom',

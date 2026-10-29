@@ -7,11 +7,13 @@ namespace App\Http\Controllers\Api\v1;
 use App\Http\Controllers\Controller;
 use App\Models\InventoryItem;
 use App\Models\ItemCategory;
+use App\Models\StockLot;
 use App\Support\ReferenceGuard;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\Rules\Unique;
 
 class InventoryItemController extends Controller
 {
@@ -55,7 +57,14 @@ class InventoryItemController extends Controller
         $validated = $request->validate([
             'category_id' => ['nullable', 'uuid', Rule::exists('item_categories', 'id')->whereNull('deleted_at')],
             'name' => ['required', 'string', 'max:255'],
-            'code' => ['required', 'string', 'max:100', 'unique:inventory_items,code'],
+            // W4-03: a code may not equal another item's barcode or any lot
+            // number. The scan lookup goes barcode, then item code, then lot
+            // number, so either clash would make one of them unreachable.
+            'code' => ['required', 'string', 'max:100', 'unique:inventory_items,code', ...self::codeCrossRules()],
+            // W4-03: optional and unique. Printable ASCII only, the Code128 set B
+            // range the desktop label renderer encodes. It may not equal another
+            // item's code or any lot number, so a scan never shadows one of them.
+            'barcode' => ['nullable', 'string', 'max:64', 'regex:/^[\x20-\x7E]+$/', 'unique:inventory_items,barcode', ...self::barcodeCrossRules()],
             'item_type' => ['required', 'string', 'in:raw_material,foam_block,cut_template_piece,slice,byproduct_fill,furniture_finished_good,packaging,barrel,pallet'],
             'unit_of_measure' => ['required', 'string'],
             'primary_uom' => ['nullable', 'string'],
@@ -77,11 +86,43 @@ class InventoryItemController extends Controller
             'wholesale_price' => ['nullable', 'numeric', 'min:0'],
             'min_price' => ['nullable', 'numeric', 'min:0'],
             'price_basis' => ['sometimes', 'string', 'in:unit,m3'],
-        ]);
+        ], self::scanCodeMessages());
 
         $item = InventoryItem::create($validated);
 
         return response()->json($item->load(['category']), 201);
+    }
+
+    /**
+     * W4-03: resolves a scanned or typed code. Exact match, in order: an item
+     * barcode, then an item code, then a lot number. Items are company-wide; a
+     * lot resolves only inside the caller's unit (StockLot's warehouse scope).
+     */
+    public function lookup(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'code' => ['required', 'string', 'max:255'],
+        ]);
+        $code = $validated['code'];
+
+        $item = InventoryItem::with(['category'])->where('barcode', $code)->first()
+            ?? InventoryItem::with(['category'])->where('code', $code)->first();
+
+        if ($item !== null) {
+            return response()->json(['type' => 'item', 'item' => $item]);
+        }
+
+        $lot = StockLot::with(['warehouse'])->where('lot_number', $code)->first();
+        $lotItem = $lot !== null ? InventoryItem::with(['category'])->find($lot->inventory_item_id) : null;
+
+        if ($lot !== null && $lotItem !== null) {
+            return response()->json(['type' => 'lot', 'item' => $lotItem, 'lot' => $lot]);
+        }
+
+        return response()->json([
+            'message' => "No item or lot matches the code {$code}.",
+            'code' => 'CODE_NOT_FOUND',
+        ], 404);
     }
 
     public function show(string $id): JsonResponse
@@ -95,10 +136,21 @@ class InventoryItemController extends Controller
     {
         $item = InventoryItem::findOrFail($id);
 
+        // W4-03: the cross-column checks (see store) run only when the value
+        // changes, so an item whose existing code or barcode was later matched
+        // by a new lot number can still be edited.
+        $codeCrossRules = $request->has('code') && $request->input('code') !== $item->code
+            ? self::codeCrossRules($id)
+            : [];
+        $barcodeCrossRules = $request->filled('barcode') && $request->input('barcode') !== $item->barcode
+            ? self::barcodeCrossRules($id)
+            : [];
+
         $validated = $request->validate([
             'category_id' => ['nullable', 'uuid', Rule::exists('item_categories', 'id')->whereNull('deleted_at')],
             'name' => ['sometimes', 'string', 'max:255'],
-            'code' => ['sometimes', 'string', 'max:100', "unique:inventory_items,code,{$id}"],
+            'code' => ['sometimes', 'string', 'max:100', "unique:inventory_items,code,{$id}", ...$codeCrossRules],
+            'barcode' => ['nullable', 'string', 'max:64', 'regex:/^[\x20-\x7E]+$/', "unique:inventory_items,barcode,{$id}", ...$barcodeCrossRules],
             'item_type' => ['sometimes', 'string', 'in:raw_material,foam_block,cut_template_piece,slice,byproduct_fill,furniture_finished_good,packaging,barrel,pallet'],
             'unit_of_measure' => ['sometimes', 'string'],
             'primary_uom' => ['nullable', 'string'],
@@ -117,11 +169,51 @@ class InventoryItemController extends Controller
             'wholesale_price' => ['nullable', 'numeric', 'min:0'],
             'min_price' => ['nullable', 'numeric', 'min:0'],
             'price_basis' => ['sometimes', 'string', 'in:unit,m3'],
-        ]);
+        ], self::scanCodeMessages());
 
         $item->update($validated);
 
         return response()->json($item->load(['category']));
+    }
+
+    /**
+     * W4-03: an item code may not equal another item's barcode or any lot
+     * number. Like barcodeCrossRules, both checks query the tables directly.
+     *
+     * @return array<int, Unique>
+     */
+    private static function codeCrossRules(?string $ignoreItemId = null): array
+    {
+        return [
+            Rule::unique('inventory_items', 'barcode')->ignore($ignoreItemId),
+            Rule::unique('stock_lots', 'lot_number'),
+        ];
+    }
+
+    /**
+     * W4-03: a barcode may not equal another item's code or any lot number.
+     * Both checks query the tables directly, so soft-deleted rows and lots in
+     * other units (hidden by StockLot's warehouse scope) count too.
+     *
+     * @return array<int, Unique>
+     */
+    private static function barcodeCrossRules(?string $ignoreItemId = null): array
+    {
+        return [
+            Rule::unique('inventory_items', 'code')->ignore($ignoreItemId),
+            Rule::unique('stock_lots', 'lot_number'),
+        ];
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private static function scanCodeMessages(): array
+    {
+        return [
+            'code.unique' => 'This code is already used as another item\'s code or barcode, or as a lot number.',
+            'barcode.unique' => 'This barcode is already used as another item\'s barcode or code, or as a lot number.',
+        ];
     }
 
     public function destroy(string $id): JsonResponse

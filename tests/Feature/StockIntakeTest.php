@@ -235,3 +235,11 @@ test('stock intake auto-derives container_quantity when container_quantity is om
     expect((float) $lot->quantity)->toBe(1500.0)
         ->and((float) $lot->container_quantity)->toBe(6.0); // 1500 / 250 = 6
 });
+
+test('a typed lot number that reads as an item code or barcode is refused', function () {
+    $this->fabric->forceFill(['barcode' => '6281234567890'])->save();
+
+    ($this->intake)(['lot_number' => 'FAB-1'])->assertStatus(422)->assertJsonValidationErrors('lot_number');
+    ($this->intake)(['lot_number' => '6281234567890'])->assertStatus(422)->assertJsonValidationErrors('lot_number');
+    ($this->intake)(['lot_number' => 'FAB-LOT-77'])->assertStatus(201);
+});

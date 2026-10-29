@@ -12,6 +12,7 @@ use App\Rules\ExistsInCurrentUnit;
 use App\Services\StockLotService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 
 class StockLotController extends Controller
 {
@@ -74,7 +75,9 @@ class StockLotController extends Controller
         $validated = $request->validate([
             'inventory_item_id' => ['required', 'uuid', 'exists:inventory_items,id'],
             'warehouse_id' => ['required', 'uuid', new ExistsInCurrentUnit(Warehouse::class, 'warehouse')],
-            'lot_number' => ['nullable', 'string', 'max:255'],
+            // A typed lot number must not read as an item code or barcode: the scan lookup
+            // checks barcode, then item code, then lot number (W4-03).
+            'lot_number' => ['nullable', 'string', 'max:255', Rule::unique('inventory_items', 'code'), Rule::unique('inventory_items', 'barcode')],
             'bin_location' => ['nullable', 'string', 'max:50'],
             'quantity' => ['required', 'numeric', 'min:0.0001'],
             'container_quantity' => ['nullable', 'numeric', 'min:0'],

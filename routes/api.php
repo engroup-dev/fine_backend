@@ -396,6 +396,8 @@ Route::prefix('v1')->group(function () {
                 Route::apiResource('item-categories', ItemCategoryController::class);
                 Route::apiResource('bundles', BundleController::class);
                 Route::apiResource('inventory-items', InventoryItemController::class);
+                // W4-03: scan or type a barcode, item code or lot number.
+                Route::get('/inventory/lookup', [InventoryItemController::class, 'lookup']);
                 Route::get('/stock-lots/available-for-cutting', [StockLotController::class, 'availableForCutting']);
                 Route::get('/stock-lots/available-foam-blocks', [StockLotController::class, 'availableFoamBlocks']);
                 Route::post('/stock-lots/intake', [StockLotController::class, 'intake']);
