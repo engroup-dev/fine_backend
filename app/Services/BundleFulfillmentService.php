@@ -508,6 +508,9 @@ final class BundleFulfillmentService
             'height_m' => $lot->height_m,
             'grade' => $lot->grade ?? 'standard',
             'source_stock_lot_id' => $lot->id,
+            // W4-04: setting goods aside neither refreshes nor ages them: the
+            // reserved part starts from its parent's idle-since.
+            'received_at' => StagnantStockService::idleSince($lot),
             'status' => 'reserved',
         ]);
 

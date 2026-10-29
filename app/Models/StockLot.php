@@ -39,6 +39,7 @@ class StockLot extends Model
         'grade',
         'block_type',
         'status',
+        'received_at',
         'attribute_values',
         'production_batch_id',
         'source_block_length_m',
@@ -59,6 +60,7 @@ class StockLot extends Model
         'weight_kg' => 'decimal:4',
         'unit_cost' => 'decimal:4',
         'attribute_values' => 'array',
+        'received_at' => 'datetime',
         'record_version' => 'integer',
         'source_block_length_m' => 'decimal:4',
         'source_block_width_m' => 'decimal:4',
@@ -70,6 +72,12 @@ class StockLot extends Model
         // Stock lots have no operating_unit_id of their own; they belong to a unit
         // only through their warehouse.
         static::addGlobalScope(new WarehouseOperatingUnitScope);
+
+        // W4-04: the lot's age anchor. A split (transfer or reservation)
+        // passes its parent's idle-since; anything else entered stock now.
+        static::creating(function (StockLot $stockLot): void {
+            $stockLot->received_at ??= now();
+        });
 
         static::saving(function (StockLot $stockLot): void {
             if ($stockLot->length_m !== null && $stockLot->width_m !== null && $stockLot->height_m !== null) {
@@ -135,8 +143,11 @@ class StockLot extends Model
     }
 
     /**
-     * The block this piece was cut from. Set on cutter-output StockLots so a
-     * finished piece can always be traced back to its source dimensions and lot.
+     * The lot this one came from. On cutter output it is the block the piece
+     * was cut from, so a finished piece can be traced back to its source
+     * dimensions and lot. On a split (stock issue landing, reservation `-R`,
+     * warehouse transfer `-XFER`) it is the lot it split from; the origin block
+     * is reached through that chain.
      */
     public function sourceBlock(): BelongsTo
     {

@@ -22,7 +22,7 @@ class StockLotController extends Controller
     {
         $filters = $request->only([
             'status', 'grade', 'warehouse_id', 'category_id',
-            'production_batch_id', 'inventory_item_id', 'attrs', 'block_type', 'bin_location',
+            'production_batch_id', 'include_transfers', 'inventory_item_id', 'attrs', 'block_type', 'bin_location',
         ]);
         $perPage = $request->integer('per_page', 15);
 

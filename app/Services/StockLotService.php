@@ -192,6 +192,13 @@ class StockLotService
 
         if (isset($filters['production_batch_id']) && filled($filters['production_batch_id'])) {
             $query->where('production_batch_id', $filters['production_batch_id']);
+
+            // W4-04: a warehouse transfer copy (-XFER) keeps the batch for
+            // lineage, but the batch's own listing shows each registered lot
+            // once, so the copies stay out unless asked for.
+            if (! filter_var($filters['include_transfers'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
+                $query->whereNull('source_stock_lot_id');
+            }
         }
 
         if (isset($filters['inventory_item_id']) && filled($filters['inventory_item_id'])) {
@@ -528,7 +535,10 @@ class StockLotService
      * `SalesOrderService::drawFromUnit`), splitting each lot drawn into a new
      * lot in the destination warehouse so per-lot cost/grade/dimensions are
      * preserved. Purely a physical move within one unit — no ledger entry.
-     * Each new lot takes the item's bin in the destination (W4-02).
+     * Each new lot takes the item's bin in the destination (W4-02) and keeps
+     * the source's lineage (source_stock_lot_id = the lot it split from, batch,
+     * pressure, origin block dimensions) and its idle-since as received_at, so
+     * tracing and stock age survive (W4-04).
      *
      * @return array{transferred_quantity: float, lots: array<int, StockLot>}
      */
@@ -621,6 +631,24 @@ class StockLotService
                     'grade' => $lot->grade,
                     'block_type' => $lot->block_type,
                     'attribute_values' => $lot->attribute_values,
+                    // W4-04: the moved part keeps its lineage and its age. Like
+                    // every other split (stock issue, reservation) it points at
+                    // the lot it split from; the origin block is reached through
+                    // that chain, and the origin block's dimensions are copied.
+                    // The pointer also marks it as a transfer copy, which
+                    // ProductionBatch::scrapLots() and the scrap numbering skip.
+                    // The block's sequence stays on the source row only: it is
+                    // unique per batch (lot_batch_sequence_unique) and the
+                    // batch's blocks() would count the copy twice in grading and
+                    // costing. received_at takes the source's idle-since, so the
+                    // move neither refreshes nor ages the goods.
+                    'source_stock_lot_id' => $lot->id,
+                    'production_batch_id' => $lot->production_batch_id,
+                    'pressure' => $lot->pressure,
+                    'source_block_length_m' => $lot->source_block_length_m,
+                    'source_block_width_m' => $lot->source_block_width_m,
+                    'source_block_height_m' => $lot->source_block_height_m,
+                    'received_at' => StagnantStockService::idleSince($lot),
                     'status' => 'available',
                 ]);
 

@@ -13,6 +13,7 @@ use App\Models\User;
 use App\Models\UserRole;
 use App\Models\Warehouse;
 use App\Services\ProductionBatchService;
+use App\Services\StockLotService;
 use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 
@@ -697,4 +698,56 @@ test('batch with separator having null pressure transitions to graded successful
     ($this->api)()->postJson("/api/v1/production-batches/{$batch->id}/transition", [
         'status' => 'graded',
     ])->assertStatus(200)->assertJsonPath('status', 'graded');
+});
+
+test('a transferred block or scrap lot is not counted or numbered as scrap of its batch', function () {
+    $batch = ($this->makeBatch)();
+    $yard = Warehouse::create(['operating_unit_id' => $this->unit->id, 'name' => 'Yard', 'code' => 'WH-YARD']);
+
+    ($this->api)()->postJson("/api/v1/production-batches/{$batch->id}/blocks", [
+        'groups' => [($this->scrapGroup)(1, 2.0, 1.0), ($this->blockGroup)(1, 2.0, 0.8)],
+    ])->assertStatus(201);
+
+    $stockLots = app(StockLotService::class);
+    $movedBlock = $stockLots->transferBetweenWarehouses($this->blockItem->id, $this->warehouse->id, $yard->id, 1)['lots'][0];
+    $stockLots->transferBetweenWarehouses($this->scrapItem->id, $this->warehouse->id, $yard->id, 4.8);
+
+    // The copy keeps the batch for lineage but is neither a block nor scrap of it.
+    expect($movedBlock->production_batch_id)->toBe($batch->id)
+        ->and($movedBlock->sequence_in_batch)->toBeNull();
+
+    ($this->api)()->getJson("/api/v1/production-batches/{$batch->id}")
+        ->assertOk()
+        ->assertJsonPath('blocks_count', 1)
+        ->assertJsonPath('scrap_lots_count', 1);
+
+    ($this->api)()->postJson("/api/v1/production-batches/{$batch->id}/blocks", [
+        'groups' => [($this->scrapGroup)(1, 1.0, 1.0)],
+    ])->assertStatus(201);
+
+    expect($batch->scrapLots()->orderBy('lot_number')->pluck('lot_number')->all())
+        ->toBe(['SCRAP-191-01', 'SCRAP-191-02']);
+});
+
+test('the batch listing shows a transferred block once unless transfers are asked for', function () {
+    $batch = ($this->makeBatch)();
+    $yard = Warehouse::create(['operating_unit_id' => $this->unit->id, 'name' => 'Yard', 'code' => 'WH-YARD']);
+
+    ($this->api)()->postJson("/api/v1/production-batches/{$batch->id}/blocks", [
+        'groups' => [($this->blockGroup)(1, 2.0, 0.8)],
+    ])->assertStatus(201);
+
+    $origin = StockLot::where('production_batch_id', $batch->id)->sole();
+    $copy = app(StockLotService::class)
+        ->transferBetweenWarehouses($this->blockItem->id, $this->warehouse->id, $yard->id, 1)['lots'][0];
+
+    $listing = ($this->api)()->getJson("/api/v1/stock-lots?production_batch_id={$batch->id}")->assertOk();
+    expect($listing->json('total'))->toBe(1)
+        ->and($listing->json('data.0.id'))->toBe($origin->id);
+
+    $withTransfers = ($this->api)()
+        ->getJson("/api/v1/stock-lots?production_batch_id={$batch->id}&include_transfers=1")
+        ->assertOk();
+    expect(collect($withTransfers->json('data'))->pluck('id')->sort()->values()->all())
+        ->toBe(collect([$origin->id, $copy->id])->sort()->values()->all());
 });

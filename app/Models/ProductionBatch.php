@@ -80,8 +80,17 @@ final class ProductionBatch extends Model
         return $this->hasMany(StockLot::class)->whereNotNull('sequence_in_batch');
     }
 
+    /**
+     * Scrap registered on the run. Other unsequenced lots carry the batch too
+     * and are not scrap: cutter remnants (remnant_of_lot_id) and warehouse
+     * transfer copies (source_stock_lot_id, W4-04), which keep the batch for
+     * lineage.
+     */
     public function scrapLots(): HasMany
     {
-        return $this->hasMany(StockLot::class)->whereNull('sequence_in_batch');
+        return $this->hasMany(StockLot::class)
+            ->whereNull('sequence_in_batch')
+            ->whereNull('remnant_of_lot_id')
+            ->whereNull('source_stock_lot_id');
     }
 }

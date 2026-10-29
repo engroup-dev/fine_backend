@@ -312,3 +312,55 @@ test('another unit cannot touch a sale bundle pieces', function () {
         ->getJson("/api/v1/sale-components/{$components[0]['id']}/matching-stock")
         ->assertNotFound();
 });
+
+test('a reserved-then-released split keeps its parent idle-since in the stagnant stock report', function () {
+    $this->travelTo(now()->subDays(120));
+    $idleRoll = StockLot::create([
+        'inventory_item_id' => $this->fabric->id, 'warehouse_id' => $this->storeWarehouse->id,
+        'lot_number' => 'FAB-IDLE', 'quantity' => 50, 'unit_cost' => 10, 'status' => 'available',
+    ]);
+    $soldRoll = StockLot::create([
+        'inventory_item_id' => $this->fabric->id, 'warehouse_id' => $this->storeWarehouse->id,
+        'lot_number' => 'FAB-SOLD', 'quantity' => 50, 'unit_cost' => 10, 'status' => 'available',
+    ]);
+    $this->travelTo(now()->addDays(110)); // 10 days ago
+    InventoryMovement::create([
+        'operating_unit_id' => $this->store->id, 'stock_lot_id' => $soldRoll->id,
+        'from_warehouse_id' => $this->storeWarehouse->id, 'sku' => 'FAB-1', 'movement_type' => 'sale',
+        'quantity_delta' => -5, 'unit_cost' => 10, 'reason' => 'test_sale',
+    ]);
+    $soldAt = now()->toDateTimeString();
+    $this->travelBack();
+
+    $sale = ($this->sell)();
+    $fabric = ($this->define)($sale)->json('components')[2];
+
+    // Set 12 m aside from each roll in turn, releasing it back to the shelf.
+    $splits = [];
+    foreach ([$idleRoll, $soldRoll] as $roll) {
+        ($this->api)()->postJson("/api/v1/sale-components/{$fabric['id']}/reserve", [
+            'allocations' => [['stock_lot_id' => $roll->id, 'quantity' => 12]],
+        ])->assertSuccessful();
+        ($this->api)()->postJson("/api/v1/sale-components/{$fabric['id']}/release")->assertSuccessful();
+        $splits[$roll->id] = StockLot::where('source_stock_lot_id', $roll->id)->sole();
+    }
+
+    expect($splits[$idleRoll->id]->lot_number)->toBe('FAB-IDLE-R1')
+        ->and($splits[$idleRoll->id]->status)->toBe('available')
+        ->and($splits[$idleRoll->id]->received_at->toDateTimeString())->toBe($idleRoll->fresh()->received_at->toDateTimeString())
+        ->and($splits[$soldRoll->id]->received_at->toDateTimeString())->toBe($soldAt);
+
+    $manager = User::factory()->create(['must_change_password' => false]);
+    $role = Role::firstOrCreate(['slug' => 'inventory-manager'], ['name' => 'Inventory Manager']);
+    UserRole::create(['user_id' => $manager->id, 'role_id' => $role->id, 'operating_unit_id' => $this->store->id]);
+    $report = fn (int $days) => collect($this->actingAs($manager)->withHeaders(['X-Operating-Unit-ID' => $this->store->id])
+        ->getJson("/api/v1/inventory/stagnant-stock?days={$days}")->assertOk()->json('rows'))->keyBy('stock_lot_id');
+
+    // At 90 days: the idle roll and its split, both 120 days idle; the sold roll's split is not stagnant.
+    $stagnant = $report(90);
+    expect($stagnant->keys()->all())->toEqualCanonicalizing([$idleRoll->id, $splits[$idleRoll->id]->id])
+        ->and($stagnant[$splits[$idleRoll->id]->id]['days_idle'])->toBe(120);
+
+    // At 5 days the sold roll's split shows its parent's 10 days, not the roll's 120.
+    expect($report(5)[$splits[$soldRoll->id]->id]['days_idle'])->toBe(10);
+});

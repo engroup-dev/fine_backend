@@ -57,6 +57,7 @@ use App\Http\Controllers\Api\v1\SaleBundleController;
 use App\Http\Controllers\Api\v1\SaleController;
 use App\Http\Controllers\Api\v1\SalesMarginReportController;
 use App\Http\Controllers\Api\v1\SalesReturnController;
+use App\Http\Controllers\Api\v1\StagnantStockController;
 use App\Http\Controllers\Api\v1\StockCountController;
 use App\Http\Controllers\Api\v1\StockLotController;
 use App\Http\Controllers\Api\v1\StockMovementCardController;
@@ -410,6 +411,8 @@ Route::prefix('v1')->group(function () {
                 // W4-02: reorder levels and bins per item per warehouse, and the reorder report.
                 Route::apiResource('item-stock-levels', ItemStockLevelController::class);
                 Route::get('/inventory/reorder-report', [ItemStockLevelController::class, 'reorderReport']);
+                // W4-04: lots idle longer than ?days (default 90), valued at qty × unit cost.
+                Route::get('/inventory/stagnant-stock', [StagnantStockController::class, 'index']);
                 Route::apiResource('warehouses', WarehouseController::class);
                 Route::apiResource('warehouse-transfers', WarehouseTransferController::class)->except(['destroy']);
                 Route::post('/warehouse-transfers/{id}/complete', [WarehouseTransferController::class, 'complete']);

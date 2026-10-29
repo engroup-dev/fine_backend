@@ -279,9 +279,12 @@ class ProductionBatchService
             $width = (float) $locked->bun_width_m;
 
             // Scrap lots are numbered per batch, independently of block sequences.
+            // Warehouse transfer copies keep the batch for lineage (W4-04) but
+            // are not scrap, so they take no number.
             $scrapIndex = StockLot::withTrashed()
                 ->where('production_batch_id', $locked->id)
                 ->whereNull('sequence_in_batch')
+                ->whereNull('source_stock_lot_id')
                 ->count() + 1;
 
             foreach ($groups as $group) {
