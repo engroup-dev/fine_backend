@@ -19,6 +19,7 @@ use App\Models\SalesOrder;
 use App\Models\SalesOrderLine;
 use App\Models\StockLot;
 use App\Support\InventoryAccounts;
+use App\Support\LotSize;
 use App\Support\SalesAccounts;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -30,9 +31,6 @@ use Illuminate\Support\Facades\DB;
  */
 final class BundleFulfillmentService
 {
-    /** Two sizes within half a centimetre are the same piece. */
-    private const SIZE_TOLERANCE_M = 0.005;
-
     /** What the cutter plant produces (InventoryAccounts: 1132). */
     private const CUTTABLE_TYPES = ['cut_template_piece', 'slice'];
 
@@ -549,28 +547,15 @@ final class BundleFulfillmentService
         return $sale;
     }
 
+    /**
+     * Same size in any orientation, within half a centimetre (LotSize).
+     */
     private function sizeMatches(SaleBundleComponent $component, StockLot $lot): bool
     {
-        if (! $component->hasSize()) {
-            return true;
-        }
-
-        if ($lot->length_m === null || $lot->width_m === null || $lot->height_m === null) {
-            return false;
-        }
-
-        $want = [(float) $component->length_m, (float) $component->width_m, (float) $component->height_m];
-        $have = [(float) $lot->length_m, (float) $lot->width_m, (float) $lot->height_m];
-        sort($want);
-        sort($have);
-
-        foreach ($want as $i => $dimension) {
-            if (abs($dimension - $have[$i]) > self::SIZE_TOLERANCE_M) {
-                return false;
-            }
-        }
-
-        return true;
+        return LotSize::matches(
+            $component->hasSize() ? [(float) $component->length_m, (float) $component->width_m, (float) $component->height_m] : null,
+            $lot,
+        );
     }
 
     /**

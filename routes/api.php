@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use App\Http\Controllers\Api\v1\AccountController;
 use App\Http\Controllers\Api\v1\Admin\ProvisionUserController;
+use App\Http\Controllers\Api\v1\AssemblyOrderController;
 use App\Http\Controllers\Api\v1\AttendanceController;
 use App\Http\Controllers\Api\v1\AuditLogController;
 use App\Http\Controllers\Api\v1\AuthController;
@@ -321,6 +322,22 @@ Route::prefix('v1')->group(function () {
                 Route::put('/cutter-work-order-lines/{lineId}/assign-template', [CutterWorkOrderController::class, 'assignTemplate']);
                 Route::get('/cutter-work-order-lines/{lineId}/available-blocks', [CutterWorkOrderController::class, 'availableBlocks']);
                 Route::post('/cutter-work-order-lines/{lineId}/select-block', [CutterWorkOrderController::class, 'selectBlock']);
+            });
+
+            // Furniture assembly orders (W4-07, decision #12): reads with view-furniture,
+            // opening an order with create-furniture, completing or cancelling with edit-furniture.
+            Route::middleware(['require.role:owner,furniture-manager,assembler', 'require.module:view-furniture'])->group(function () {
+                Route::get('/assembly-orders', [AssemblyOrderController::class, 'index']);
+                Route::get('/assembly-orders/{id}', [AssemblyOrderController::class, 'show'])->whereUuid('id');
+            });
+
+            Route::middleware(['require.role:owner,furniture-manager,assembler', 'require.module:view-furniture,create-furniture'])->group(function () {
+                Route::post('/assembly-orders', [AssemblyOrderController::class, 'store']);
+            });
+
+            Route::middleware(['require.role:owner,furniture-manager,assembler', 'require.module:view-furniture,edit-furniture'])->group(function () {
+                Route::post('/assembly-orders/{id}/complete', [AssemblyOrderController::class, 'complete'])->whereUuid('id');
+                Route::post('/assembly-orders/{id}/cancel', [AssemblyOrderController::class, 'cancel'])->whereUuid('id');
             });
 
             // Cross-module material requests — visible to furniture/cutter/foam

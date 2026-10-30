@@ -231,6 +231,8 @@ class InventoryItemController extends Controller
                 'bundle_items' => 'inventory_item_id',
                 'warehouse_transfer_lines' => 'inventory_item_id',
                 'internal_restock_request_lines' => 'inventory_item_id',
+                'assembly_orders' => 'finished_item_id',
+                'assembly_order_lines' => 'inventory_item_id',
             ], $item->id);
 
         if ($inUse !== null) {

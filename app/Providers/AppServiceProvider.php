@@ -3,6 +3,8 @@
 namespace App\Providers;
 
 use App\Models\Account;
+use App\Models\AssemblyOrder;
+use App\Models\AssemblyOrderLine;
 use App\Models\BankReconciliation;
 use App\Models\Bundle;
 use App\Models\BundleItem;
@@ -131,6 +133,8 @@ class AppServiceProvider extends ServiceProvider
         StockCountLine::observe(AuditObserver::class);
         JournalEntry::observe(AuditObserver::class);
         CutterWorkOrder::observe(AuditObserver::class);
+        AssemblyOrder::observe(AuditObserver::class);
+        AssemblyOrderLine::observe(AuditObserver::class);
 
         // Lines and requests under documents already audited above.
         InternalRestockRequest::observe(AuditObserver::class);
