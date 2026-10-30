@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use App\Exceptions\LedgerRuleException;
 use App\Exceptions\SalesRuleException;
 use App\Models\Account;
 use App\Models\CashAccount;
@@ -211,7 +212,7 @@ test('manual entry with client_id on 41 returns 422 PARTY_ON_NON_RECEIVABLE', fu
 
 test('credit sale and collection for a client linked to a non-receivable account still post, untagged', function () {
     seedUnitAccounts($this->unit);
-    $other = Account::where('account_code', '1215')->firstOrFail();
+    $other = Account::where('account_code', '123')->firstOrFail();
     $this->client->update(['account_id' => $other->id]);
     $cash = CashAccount::create([
         'operating_unit_id' => $this->unit->id, 'name' => 'Drawer', 'kind' => 'cash',
@@ -224,6 +225,19 @@ test('credit sale and collection for a client linked to a non-receivable account
     $lines = JournalLine::where('account_id', $other->id)->get();
     expect($lines)->toHaveCount(2)
         ->and($lines->pluck('client_id')->filter()->count())->toBe(0);
+});
+
+test('a client linked to the employee advances account (1215) can no longer sell on terms', function () {
+    // W5-00: 1215 lines need an employee, and sales never carry one, so the
+    // misconfiguration is refused at posting time rather than posting untagged.
+    seedUnitAccounts($this->unit);
+    $this->client->update(['account_id' => Account::where('account_code', '1215')->value('id')]);
+
+    expect(fn () => sellOnTerms('receivable'))->toThrow(function (LedgerRuleException $e): void {
+        expect($e->errorCode)->toBe('PARTY_EMPLOYEE_REQUIRED');
+    });
+
+    expect(JournalEntry::count())->toBe(0);
 });
 
 test('manual entry checks the sub-account of a client from another unit', function () {

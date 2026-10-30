@@ -9,7 +9,9 @@ use App\Exceptions\LedgerRuleException;
 use App\Http\Controllers\Concerns\ResolvesReportScope;
 use App\Http\Controllers\Controller;
 use App\Models\Client;
+use App\Models\Employee;
 use App\Models\JournalEntry;
+use App\Models\Scopes\OperatingUnitScope;
 use App\Rules\LeafAccount;
 use App\Services\AccountingService;
 use App\Services\TrialBalanceService;
@@ -152,13 +154,14 @@ class JournalEntryController extends Controller
             'lines.*.fx_rate' => 'sometimes|nullable|numeric|gt:0',
             'lines.*.operating_unit_id' => 'sometimes|nullable|uuid|exists:operating_units,id',
             'lines.*.client_id' => 'sometimes|nullable|uuid|exists:clients,id',
+            'lines.*.employee_id' => 'sometimes|nullable|uuid|exists:employees,id',
             'lines.*.memo' => 'sometimes|nullable|string|max:500',
         ]);
 
         try {
             $entry = $this->accountingService->postJournal(
                 $validated['description'],
-                $this->defaultClientUnits($validated['lines']),
+                $this->defaultEmployeeUnits($this->defaultClientUnits($validated['lines'])),
                 isManual: true,
                 userId: $user->id,
                 entryDate: $validated['entry_date'] ?? null,
@@ -201,6 +204,39 @@ class JournalEntryController extends Controller
         return array_map(function (array $line) use ($unitByClient): array {
             if (($line['client_id'] ?? null) !== null && ($line['operating_unit_id'] ?? null) === null) {
                 $line['operating_unit_id'] = $unitByClient[$line['client_id']] ?? null;
+            }
+
+            return $line;
+        }, $lines);
+    }
+
+    /**
+     * W5-00: an employee-tagged line with no unit takes the employee's unit, so
+     * the advance stays visible to unit-scoped advance balances and payroll
+     * recovery. Deleted employees are included so a repayment line still lands
+     * in their unit; postJournal decides what a deleted employee may post.
+     *
+     * @param  array<int, array<string, mixed>>  $lines
+     * @return array<int, array<string, mixed>>
+     */
+    private function defaultEmployeeUnits(array $lines): array
+    {
+        $needsUnit = fn (array $line): bool => ($line['employee_id'] ?? null) !== null && ($line['operating_unit_id'] ?? null) === null;
+
+        $employeeIds = collect($lines)->filter($needsUnit)->pluck('employee_id')->unique()->all();
+
+        if ($employeeIds === []) {
+            return $lines;
+        }
+
+        $unitByEmployee = Employee::withoutGlobalScope(OperatingUnitScope::class)
+            ->withTrashed()
+            ->whereKey($employeeIds)
+            ->pluck('operating_unit_id', 'id');
+
+        return array_map(function (array $line) use ($needsUnit, $unitByEmployee): array {
+            if ($needsUnit($line)) {
+                $line['operating_unit_id'] = $unitByEmployee[$line['employee_id']] ?? null;
             }
 
             return $line;

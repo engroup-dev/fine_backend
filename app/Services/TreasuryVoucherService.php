@@ -11,6 +11,7 @@ use App\Models\Account;
 use App\Models\CashAccount;
 use App\Models\Client;
 use App\Models\Company;
+use App\Models\Employee;
 use App\Models\TreasuryVoucher;
 use App\Models\User;
 use App\Support\AccountTree;
@@ -100,6 +101,7 @@ final class TreasuryVoucherService
 
             $clientId = $data['client_id'] ?? null;
             $client = null;
+            $employee = null;
 
             if ($clientId !== null) {
                 $client = Client::with('account')->lockForUpdate()->find($clientId);
@@ -136,6 +138,17 @@ final class TreasuryVoucherService
                         "Account {$counterAccountCode} is a treasury account; use a treasury transfer instead.",
                         'VOUCHER_COUNTER_IS_TREASURY',
                     );
+                }
+
+                // W5-00: unit-scoped lookup, so a unit user cannot name another unit's
+                // employee. A deleted employee is found so a repayment can still post;
+                // postJournal refuses a new advance to them and a unit mismatch.
+                $employeeId = $data['employee_id'] ?? null;
+                if ($employeeId !== null) {
+                    $employee = Employee::withTrashed()->lockForUpdate()->find($employeeId);
+                    if ($employee === null) {
+                        throw new LedgerRuleException('Employee not found.', 'EMPLOYEE_NOT_FOUND');
+                    }
                 }
             }
 
@@ -179,6 +192,8 @@ final class TreasuryVoucherService
                 'operating_unit_id' => $operatingUnitId,
                 'memo' => $memo,
                 'client_id' => $client?->id,
+                // W5-00: an employee advances counter account (1215) names the employee.
+                'employee_id' => $employee?->id,
             ];
             if ($isForeign) {
                 $counterLine['currency'] = $treasuryCurrency;

@@ -115,6 +115,7 @@ final class TreasuryVoucherController extends Controller
             'kind' => ['required', Rule::enum(TreasuryVoucherKind::class)],
             'cash_account_id' => ['required', 'uuid', 'exists:cash_accounts,id'],
             'client_id' => ['nullable', 'uuid', 'exists:clients,id'],
+            'employee_id' => ['nullable', 'uuid', 'exists:employees,id', 'prohibits:client_id'],
             'counter_account_code' => ['required_without:client_id', 'nullable', 'string', 'max:20'],
             'amount' => ['required', 'numeric', 'min:0.0001'],
             'fx_rate' => ['nullable', 'numeric', 'min:0.00000001'],

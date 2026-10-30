@@ -13,10 +13,13 @@ use App\Exceptions\UnbalancedJournalException;
 use App\Models\Account;
 use App\Models\Client;
 use App\Models\Company;
+use App\Models\Employee;
 use App\Models\FiscalYear;
 use App\Models\JournalEntry;
 use App\Models\JournalLine;
+use App\Models\Scopes\OperatingUnitScope;
 use App\Support\CompanyClock;
+use App\Support\EmployeeAdvanceAccounts;
 use App\Support\LedgerAccounts;
 use App\Support\ReceivableAccounts;
 use Illuminate\Support\Carbon;
@@ -48,7 +51,7 @@ class AccountingService
      * than a rejected one, because it silently breaks the trial balance and
      * nothing downstream would notice.
      *
-     * @param  array<int, array{account_code: string, debit?: float, credit?: float, operating_unit_id?: string|null, memo?: string|null, client_id?: string|null, currency?: string|null, original_amount?: float|null, fx_rate?: float|null}>  $lines
+     * @param  array<int, array{account_code: string, debit?: float, credit?: float, operating_unit_id?: string|null, memo?: string|null, client_id?: string|null, employee_id?: string|null, currency?: string|null, original_amount?: float|null, fx_rate?: float|null}>  $lines
      */
     public function postJournal(
         string $description,
@@ -160,7 +163,7 @@ class AccountingService
             $accounts[$line['account_code']] ??= $this->resolvePostableAccount($line['account_code'], $isManual);
         }
 
-        $this->validatePartyLines($lines);
+        $this->validatePartyLines($lines, $accounts, $isManual);
 
         $entryDate ??= CompanyClock::today();
 
@@ -234,6 +237,7 @@ class AccountingService
                     'account_id' => $line->account_id,
                     'operating_unit_id' => $line->operating_unit_id,
                     'client_id' => $line->client_id,
+                    'employee_id' => $line->employee_id,
                     'debit' => (float) $line->credit,
                     'credit' => (float) $line->debit,
                     'currency' => $line->currency,
@@ -252,7 +256,7 @@ class AccountingService
      * may sit on accounts that later gained children or became frozen), while
      * retained earnings (33) is checked with the strict postable check.
      *
-     * @param  array<int, array{account_code: string, debit?: float, credit?: float, operating_unit_id?: string|null, memo?: string|null, client_id?: string|null, currency?: string|null, original_amount?: float|null, fx_rate?: float|null}>  $lines
+     * @param  array<int, array{account_code: string, debit?: float, credit?: float, operating_unit_id?: string|null, memo?: string|null, client_id?: string|null, employee_id?: string|null, currency?: string|null, original_amount?: float|null, fx_rate?: float|null}>  $lines
      *
      * @throws LedgerRuleException RETAINED_EARNINGS_NOT_POSTABLE
      * @throws UnbalancedJournalException
@@ -373,6 +377,7 @@ class AccountingService
                     'account_id' => $line->account_id,
                     'operating_unit_id' => $line->operating_unit_id,
                     'client_id' => $line->client_id,
+                    'employee_id' => $line->employee_id,
                     'debit' => (float) $line->credit,
                     'credit' => (float) $line->debit,
                     'currency' => $line->currency,
@@ -415,6 +420,7 @@ class AccountingService
                 'original_amount' => $line['original_amount'] ?? null,
                 'fx_rate' => $line['fx_rate'] ?? null,
                 'client_id' => $line['client_id'] ?? null,
+                'employee_id' => $line['employee_id'] ?? null,
                 'memo' => $line['memo'] ?? null,
             ]);
         }
@@ -442,8 +448,9 @@ class AccountingService
      * write so a bad party never leaves a half-posted entry.
      *
      * @param  array<int, array<string, mixed>>  $lines
+     * @param  array<string, Account>  $accounts  the accounts postJournal already resolved, keyed by code
      */
-    private function validatePartyLines(array $lines): void
+    private function validatePartyLines(array $lines, array $accounts, bool $isManual): void
     {
         foreach ($lines as $line) {
             $clientId = $line['client_id'] ?? null;
@@ -452,7 +459,7 @@ class AccountingService
                 continue;
             }
 
-            $account = $this->resolveAccount($line['account_code']);
+            $account = $accounts[$line['account_code']];
 
             if (! ReceivableAccounts::contains($account->id)) {
                 throw new SalesRuleException(
@@ -468,6 +475,119 @@ class AccountingService
                 throw new SalesRuleException(
                     "The client is bound to a different receivable sub-account than {$account->account_code}.",
                     'PARTY_ACCOUNT_MISMATCH',
+                );
+            }
+        }
+
+        $this->validateEmployeePartyLines($lines, $accounts, $isManual);
+    }
+
+    /**
+     * W5-00: the employee party belongs to the employee advances subtree (1215)
+     * and is required there, so every advance balance can be traced to a person.
+     * It is refused on any other account. Checked before any write.
+     *
+     * One exception: 1215 was a plain postable leaf before W5-00, so it may hold
+     * untagged balances. A manual entry may credit such a balance with no
+     * employee, up to what is left of it, so it can be reclassified to a person
+     * or written off; the untagged balance can only fall to zero, never go
+     * negative or grow.
+     *
+     * @param  array<int, array<string, mixed>>  $lines
+     * @param  array<string, Account>  $accounts  the accounts postJournal already resolved, keyed by code
+     */
+    private function validateEmployeePartyLines(array $lines, array $accounts, bool $isManual): void
+    {
+        $advanceIds = EmployeeAdvanceAccounts::subtreeIds();
+
+        /** @var array<string, array{account: Account, unit: string|null, credit: float}> $untaggedCredits */
+        $untaggedCredits = [];
+
+        foreach ($lines as $line) {
+            $employeeId = $line['employee_id'] ?? null;
+            $account = $accounts[$line['account_code']];
+            $isAdvance = in_array($account->id, $advanceIds, true);
+
+            if ($employeeId === null) {
+                if (! $isAdvance) {
+                    continue;
+                }
+
+                $credit = round((float) ($line['credit'] ?? 0), 4);
+
+                if ($isManual && $credit > 0) {
+                    $unitId = $line['operating_unit_id'] ?? null;
+                    $key = $account->id.'|'.($unitId ?? '');
+                    $untaggedCredits[$key] ??= ['account' => $account, 'unit' => $unitId, 'credit' => 0.0];
+                    $untaggedCredits[$key]['credit'] += $credit;
+
+                    continue;
+                }
+
+                throw new LedgerRuleException(
+                    "Account {$account->account_code} ({$account->name}) needs the employee the advance belongs to.",
+                    'PARTY_EMPLOYEE_REQUIRED',
+                    ['account_code' => $account->account_code],
+                );
+            }
+
+            if (! $isAdvance) {
+                throw new LedgerRuleException(
+                    "Account {$account->account_code} is not an employee advances account, so it cannot carry an employee.",
+                    'PARTY_ON_NON_EMPLOYEE_ACCOUNT',
+                    ['account_code' => $account->account_code],
+                );
+            }
+
+            // Only the unit scope is lifted: the line's unit is checked against the
+            // employee's own below. Deleted employees are loaded so a repayment
+            // from a former employee can still settle their advance.
+            $employee = Employee::withoutGlobalScope(OperatingUnitScope::class)
+                ->withTrashed()
+                ->select(['id', 'operating_unit_id', 'deleted_at'])
+                ->find($employeeId);
+
+            if ($employee === null) {
+                throw new LedgerRuleException('The employee on the journal line does not exist.', 'EMPLOYEE_NOT_FOUND');
+            }
+
+            if ($employee->trashed() && (float) ($line['debit'] ?? 0) > 0) {
+                throw new LedgerRuleException(
+                    'The employee was deleted, so no new advance can be charged to them; only repayments may post.',
+                    'PARTY_EMPLOYEE_DELETED',
+                );
+            }
+
+            // The advance belongs to the employee's unit, where payroll recovers it.
+            $lineUnitId = $line['operating_unit_id'] ?? null;
+            if ($lineUnitId !== null && $lineUnitId !== $employee->operating_unit_id) {
+                throw new LedgerRuleException(
+                    "The employee belongs to another operating unit than the line on account {$account->account_code}.",
+                    'PARTY_EMPLOYEE_UNIT_MISMATCH',
+                    ['account_code' => $account->account_code],
+                );
+            }
+        }
+
+        foreach ($untaggedCredits as ['account' => $account, 'unit' => $unitId, 'credit' => $credit]) {
+            $untagged = round((float) JournalLine::query()
+                ->posted()
+                ->where('account_id', $account->id)
+                ->whereNull('employee_id')
+                ->when(
+                    $unitId === null,
+                    fn ($query) => $query->whereNull('operating_unit_id'),
+                    fn ($query) => $query->where('operating_unit_id', $unitId),
+                )
+                ->selectRaw('COALESCE(SUM(debit), 0) - COALESCE(SUM(credit), 0) AS balance')
+                ->value('balance'), 4);
+
+            if ($credit - $untagged > self::BALANCE_TOLERANCE) {
+                throw new LedgerRuleException(
+                    "Account {$account->account_code} ({$account->name}) needs the employee the advance belongs to; "
+                    ."an untagged credit may only clear the {$untagged} posted there before advances named the employee.",
+                    'PARTY_EMPLOYEE_REQUIRED',
+                    ['account_code' => $account->account_code, 'untagged_balance' => $untagged],
                 );
             }
         }

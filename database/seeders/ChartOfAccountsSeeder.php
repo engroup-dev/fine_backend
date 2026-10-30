@@ -76,8 +76,10 @@ class ChartOfAccountsSeeder extends Seeder
             ['121104', 'الخزينة الرئيسية', 'asset', '1211'],
             ['121105', 'خزينة مقاصة العملات', 'asset', '1211'],
             ['1212', 'حسابات المصارف', 'asset', '121'],
-            ['1214', 'العهد المالية', 'asset', '121'],
-            ['1215', 'سلف الموظفين', 'asset', '121'],
+            // W5-00: custody and employee advances are receivables from staff, not
+            // money on hand, so they sit under 12 and stay out of the 121 treasury node.
+            ['1214', 'العهد المالية', 'asset', '12'],
+            ['1215', 'سلف الموظفين', 'asset', '12'],
             ['122', 'الزبائن والعملاء', 'asset', '12'],
             ['123', 'مدفوعات ومصروفات مقدمة', 'asset', '12'],
             ['124', 'أوراق القبض', 'asset', '12'],

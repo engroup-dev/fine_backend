@@ -10,6 +10,8 @@ use App\Models\CashAccount;
 use App\Rules\LeafAccount;
 use App\Services\AccountLedgerService;
 use App\Services\TreasuryBalanceService;
+use App\Support\EmployeeAdvanceAccounts;
+use Closure;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
@@ -72,7 +74,7 @@ final class CashAccountController extends Controller
             'operating_unit_id' => 'required|uuid|exists:operating_units,id',
             'name' => 'required|string|max:255',
             'kind' => 'sometimes|string|in:cash,bank',
-            'account_id' => ['nullable', 'uuid', 'exists:accounts,id', new LeafAccount(requireActive: true)],
+            'account_id' => ['nullable', 'uuid', 'exists:accounts,id', new LeafAccount(requireActive: true), $this->notEmployeeAdvance()],
             'currency' => 'sometimes|string|size:3',
             'balance' => 'sometimes|numeric',
         ]);
@@ -104,7 +106,7 @@ final class CashAccountController extends Controller
         $validated = $request->validate([
             'name' => 'sometimes|required|string|max:255',
             'kind' => 'sometimes|string|in:cash,bank',
-            'account_id' => ['sometimes', 'nullable', 'uuid', 'exists:accounts,id', new LeafAccount(requireActive: true, unchangedValue: $account->account_id)],
+            'account_id' => ['sometimes', 'nullable', 'uuid', 'exists:accounts,id', new LeafAccount(requireActive: true, unchangedValue: $account->account_id), $this->notEmployeeAdvance($account->account_id)],
         ]);
 
         $account->update($validated);
@@ -158,5 +160,19 @@ final class CashAccountController extends Controller
             all: $request->boolean('all'),
             currency: $validated['currency'] ?? null,
         ));
+    }
+
+    /**
+     * W5-00: the employee advances subtree (1215) is not a treasury. Every line
+     * on it needs an employee, so a treasury linked there could never post. An
+     * existing link is left alone so the rest of the form can still be saved.
+     */
+    private function notEmployeeAdvance(?string $unchangedValue = null): Closure
+    {
+        return function (string $attribute, mixed $value, Closure $fail) use ($unchangedValue): void {
+            if (is_string($value) && $value !== $unchangedValue && EmployeeAdvanceAccounts::contains($value)) {
+                $fail('An employee advances account cannot be a treasury ledger account.');
+            }
+        };
     }
 }

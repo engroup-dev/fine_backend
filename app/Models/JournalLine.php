@@ -20,6 +20,7 @@ final class JournalLine extends Model
         'account_id',
         'operating_unit_id',
         'client_id',
+        'employee_id',
         'debit',
         'credit',
         'currency',
@@ -75,6 +76,11 @@ final class JournalLine extends Model
     public function client(): BelongsTo
     {
         return $this->belongsTo(Client::class);
+    }
+
+    public function employee(): BelongsTo
+    {
+        return $this->belongsTo(Employee::class);
     }
 
     public function operatingUnit(): BelongsTo
