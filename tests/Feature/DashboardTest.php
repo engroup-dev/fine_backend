@@ -25,6 +25,10 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 uses(RefreshDatabase::class);
 
 beforeEach(function () {
+    // Midday UTC: the company clock (Africa/Tripoli) and now() agree on the date
+    // whatever time the suite runs; 22:00-24:00 UTC is already tomorrow in Tripoli.
+    $this->travelTo(now()->setTime(12, 0));
+
     $this->company = Company::create(['name' => 'Fine Foam Mfg', 'default_currency' => 'LYD']);
     $this->seed(ChartOfAccountsTestSeeder::class);
 
