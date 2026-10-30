@@ -235,12 +235,22 @@ test('employee pay fields round-trip through the API', function () {
 
     $updated = ($this->asOwner)()->putJson("/api/v1/employees/{$a->id}", [
         'labor_role' => 'tailor',
-        'monthly_salary' => 2500,
-        'hourly_rate' => 9.5,
         'record_version' => $a->record_version,
     ])->assertStatus(200)->json('data');
 
-    expect($updated['labor_role'])->toBe('tailor')
-        ->and((float) $updated['monthly_salary'])->toBe(2500.0)
-        ->and((float) $updated['hourly_rate'])->toBe(9.5);
+    expect($updated['labor_role'])->toBe('tailor');
+
+    // HR-11: pay terms change through a dated pay change, not the employee edit.
+    ($this->asOwner)()->postJson("/api/v1/employees/{$a->id}/compensations", [
+        'pay_type' => 'monthly',
+        'monthly_salary' => 2500,
+        'hourly_rate' => 9.5,
+        'effective_from' => '2026-02-01',
+    ])->assertStatus(201);
+
+    $shown = ($this->asOwner)()->getJson("/api/v1/employees/{$a->id}")->assertStatus(200)->json('data');
+
+    expect($shown['pay_type'])->toBe('monthly')
+        ->and((float) $shown['monthly_salary'])->toBe(2500.0)
+        ->and((float) $shown['hourly_rate'])->toBe(9.5);
 });

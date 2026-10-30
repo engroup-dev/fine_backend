@@ -27,11 +27,37 @@ final class StoreEmployeeRequest extends FormRequest
             'operating_unit_id' => ['required', 'uuid', 'exists:operating_units,id'],
             'job_title' => ['required', 'string', 'max:150'],
             'labor_role' => ['nullable', 'string', 'max:100'],
-            'pay_type' => ['required', Rule::enum(PayType::class)],
-            'monthly_salary' => ['nullable', 'numeric', 'min:0'],
-            'hourly_rate' => ['nullable', 'numeric', 'min:0'],
+            'employee_number' => ['nullable', 'string', 'max:50', 'unique:employees,employee_number'],
+            // Piece-rate pay is not supported by payroll, so it cannot be chosen.
+            'pay_type' => ['required', Rule::enum(PayType::class)->except([PayType::PieceRate])],
+            // Same rules as a dated pay change (POST /employees/{id}/compensations).
+            'monthly_salary' => ['nullable', 'required_if:pay_type,'.PayType::Monthly->value, 'numeric', 'min:0'],
+            // An hourly employee with no labor role has no role rate to fall back on.
+            'hourly_rate' => [
+                'nullable',
+                Rule::requiredIf(fn () => $this->input('pay_type') === PayType::Hourly->value && blank($this->input('labor_role'))),
+                'numeric',
+                'min:0',
+            ],
             'hire_date' => ['required', 'date'],
+            'contract_start' => ['nullable', 'date'],
+            'contract_end' => ['nullable', 'date'],
+            'probation_end' => ['nullable', 'date'],
+            'termination_date' => ['nullable', 'date'],
+            'bank_name' => ['nullable', 'string', 'max:150'],
+            'bank_account' => ['nullable', 'string', 'max:100'],
             'status' => ['nullable', Rule::enum(EmployeeStatus::class)],
+        ];
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    public function messages(): array
+    {
+        return [
+            'pay_type.enum' => 'The pay type must be monthly or hourly; piece-rate pay is not supported.',
+            'hourly_rate.required' => 'An hourly employee without a labor role needs a personal hourly rate.',
         ];
     }
 }

@@ -12,6 +12,7 @@ use App\Models\Cheque;
 use App\Models\Client;
 use App\Models\CutterWorkOrder;
 use App\Models\Employee;
+use App\Models\EmployeeCompensation;
 use App\Models\Entity;
 use App\Models\FiscalPeriod;
 use App\Models\FiscalYear;
@@ -123,6 +124,7 @@ class AppServiceProvider extends ServiceProvider
         // Parties, sales, the ledger and the cutter: these carry the Auditable
         // marker too, and every one of them moves money, stock or a promise.
         Employee::observe(AuditObserver::class);
+        EmployeeCompensation::observe(AuditObserver::class);
         Client::observe(AuditObserver::class);
         Entity::observe(AuditObserver::class);
         SalesOrder::observe(AuditObserver::class);

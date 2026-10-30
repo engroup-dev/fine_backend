@@ -69,6 +69,7 @@ it('automatically creates an entity when storing an employee without entity_id',
             'operating_unit_id' => $this->unit->id,
             'job_title' => 'Operations Manager',
             'pay_type' => PayType::Monthly->value,
+            'monthly_salary' => 3000,
             'hire_date' => '2026-02-01',
             'status' => EmployeeStatus::Active->value,
         ]);

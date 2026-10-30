@@ -5,20 +5,43 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api\v1;
 
 use App\Enums\LeaveRequestStatus;
+use App\Enums\LeaveType;
 use App\Http\Controllers\Controller;
 use App\Models\Employee;
 use App\Models\LeaveRequest;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Validation\Rule;
 
 final class LeaveRequestController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
+        $request->validate([
+            'employee_id' => ['nullable', 'uuid'],
+            'leave_type' => ['nullable', Rule::enum(LeaveType::class)],
+            'year' => ['nullable', 'integer', 'between:2000,2100'],
+        ]);
+
         $query = LeaveRequest::with(['employee.entity', 'decidedBy'])->latest();
 
         if ($request->filled('status')) {
             $query->where('status', $request->query('status'));
+        }
+
+        if ($request->filled('employee_id')) {
+            $query->where('employee_id', $request->query('employee_id'));
+        }
+
+        if ($request->filled('leave_type')) {
+            $query->where('leave_type', $request->query('leave_type'));
+        }
+
+        // Leave counted in a year is leave that starts in it.
+        if ($request->filled('year')) {
+            $year = $request->integer('year');
+            $query->whereDate('start_date', '>=', sprintf('%04d-01-01', $year))
+                ->whereDate('start_date', '<=', sprintf('%04d-12-31', $year));
         }
 
         return response()->json($query->paginate($request->integer('per_page', 25)));

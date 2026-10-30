@@ -20,11 +20,13 @@ final class Company extends Model
         'transfer_pricing_mode',
         'timezone',
         'fiscal_year_start_month',
+        'annual_leave_days',
     ];
 
     protected $casts = [
         'overhead_absorption_enabled' => 'boolean',
         'fiscal_year_start_month' => 'integer',
+        'annual_leave_days' => 'integer',
     ];
 
     public function operatingUnits(): HasMany

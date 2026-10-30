@@ -34,6 +34,7 @@ final class PayrollService
 
     public function __construct(
         private readonly AccountingService $accountingService,
+        private readonly EmployeeCompensationService $compensations,
     ) {}
 
     public function open(string $period, ?string $userId = null): PayrollRun
@@ -61,7 +62,8 @@ final class PayrollService
     }
 
     /**
-     * §9.6: gross = base salary + payable attendance hours × role rate.
+     * §9.6: gross = base salary + payable attendance hours × role rate, with
+     * the pay terms resolved per day from the compensation history (HR-11).
      * Recalculating while still in Calculated wipes and regenerates the
      * payslips.
      */
@@ -74,7 +76,7 @@ final class PayrollService
 
             $run->payslips()->delete();
 
-            $start = Carbon::createFromFormat('Y-m', $run->period)->startOfMonth();
+            $start = Carbon::createFromFormat('!Y-m', $run->period)->startOfMonth();
             $end = $start->copy()->endOfMonth();
 
             $employees = Employee::withoutGlobalScopes()
@@ -84,13 +86,11 @@ final class PayrollService
             $totalGross = 0.0;
 
             foreach ($employees as $employee) {
-                $basePay = $employee->pay_type === PayType::Monthly
-                    ? $this->monthlyBasePay($employee, $start, $end)
-                    : 0.0;
+                // HR-11: pay terms resolve by date; a mid-month change splits the period.
+                $segments = $this->compensations->segments($employee, $start, $end);
 
-                $attendancePay = $employee->pay_type === PayType::Hourly
-                    ? $this->attendancePay($employee, $start, $end)
-                    : 0.0;
+                $basePay = $this->monthlyBasePay($employee, $segments, $start, $end);
+                $attendancePay = $this->attendancePay($employee, $segments, $start, $end);
 
                 $gross = round($basePay + $attendancePay, 4);
 
@@ -115,6 +115,7 @@ final class PayrollService
 
             $run->update([
                 'status' => PayrollRunStatus::Calculated,
+                'needs_recalculation' => false,
                 'total_gross' => $totalGross,
                 'total_deductions' => 0,
                 'total_net' => $totalGross,
@@ -128,23 +129,44 @@ final class PayrollService
      * BR-PAY-004: a salaried employee hired inside the period is paid only for
      * the calendar days they were employed (the hire day counts as worked);
      * one hired after the period has not earned anything yet.
+     *
+     * HR-11: each run of days on monthly terms earns its own salary pro rata
+     * (days / days in month), so a mid-month raise pays the old salary up to
+     * the day before and the new one from its effective date.
+     *
+     * @param  list<array{from: Carbon, to: Carbon, pay_type: PayType|null, monthly_salary: float|null, hourly_rate: float|null}>  $segments
      */
-    private function monthlyBasePay(Employee $employee, Carbon $start, Carbon $end): float
+    private function monthlyBasePay(Employee $employee, array $segments, Carbon $start, Carbon $end): float
     {
-        $salary = (float) ($employee->monthly_salary ?? 0);
-        $hireDate = $employee->hire_date;
+        $hireDate = $employee->hire_date?->copy()->startOfDay();
 
-        if ($hireDate === null || $hireDate->lte($start)) {
-            return round($salary, 4);
-        }
-
-        if ($hireDate->gt($end)) {
+        if ($hireDate !== null && $hireDate->gt($end)) {
             return 0.0;
         }
 
-        $daysEmployed = $end->day - $hireDate->day + 1;
+        $employedFrom = $hireDate !== null && $hireDate->gt($start) ? $hireDate : $start->copy()->startOfDay();
+        $daysInMonth = $start->daysInMonth;
+        $pay = 0.0;
 
-        return round($salary * $daysEmployed / $start->daysInMonth, 4);
+        foreach ($segments as $segment) {
+            if ($segment['pay_type'] !== PayType::Monthly) {
+                continue;
+            }
+
+            $from = $segment['from']->copy()->max($employedFrom);
+            $to = $segment['to'];
+
+            if ($from->gt($to)) {
+                continue;
+            }
+
+            $salary = (float) ($segment['monthly_salary'] ?? 0);
+            $days = $to->day - $from->day + 1;
+
+            $pay += $days === $daysInMonth ? $salary : $salary * $days / $daysInMonth;
+        }
+
+        return round($pay, 4);
     }
 
     /**
@@ -213,6 +235,14 @@ final class PayrollService
                 throw new InvalidArgumentException('An empty payroll run has nothing to approve.');
             }
 
+            // HR-11: a pay-history change reached this period after it was
+            // calculated, so its payslips carry the old terms.
+            if ($target === PayrollRunStatus::PendingApproval && $run->needs_recalculation) {
+                throw new InvalidArgumentException(
+                    "Pay terms changed after payroll {$run->period} was calculated; recalculate it before submitting."
+                );
+            }
+
             if ($target === PayrollRunStatus::Approved) {
                 $run->approved_by_user_id = $userId;
             }
@@ -239,11 +269,23 @@ final class PayrollService
 
     /**
      * Hourly pay resolves the role rate per attendance date (HR-04), falling
-     * back to the employee's personal rate. An hourly employee with payable
-     * hours but no resolvable rate is a refusal, not a silent zero.
+     * back to the personal rate in force that day (HR-11). Only days on hourly
+     * terms are paid by the hour. An hourly employee with payable hours but no
+     * resolvable rate is a refusal, not a silent zero.
+     *
+     * @param  list<array{from: Carbon, to: Carbon, pay_type: PayType|null, monthly_salary: float|null, hourly_rate: float|null}>  $segments
      */
-    private function attendancePay(Employee $employee, Carbon $start, Carbon $end): float
+    private function attendancePay(Employee $employee, array $segments, Carbon $start, Carbon $end): float
     {
+        $hourlySegments = array_values(array_filter(
+            $segments,
+            fn (array $segment) => $segment['pay_type'] === PayType::Hourly,
+        ));
+
+        if ($hourlySegments === []) {
+            return 0.0;
+        }
+
         $attendances = Attendance::withoutGlobalScopes()
             ->where('employee_id', $employee->id)
             ->whereDate('work_date', '>=', $start->toDateString())
@@ -254,11 +296,21 @@ final class PayrollService
         $pay = 0.0;
 
         foreach ($attendances as $attendance) {
+            $workDate = $attendance->work_date->copy()->startOfDay();
+
+            $segment = collect($hourlySegments)->first(
+                fn (array $segment) => $workDate->betweenIncluded($segment['from'], $segment['to'])
+            );
+
+            if ($segment === null) {
+                continue;
+            }
+
             $rate = $employee->labor_role !== null
                 ? LaborRoleRate::rateFor($employee->labor_role, $attendance->work_date)
                 : null;
 
-            $rate ??= $employee->hourly_rate !== null ? (float) $employee->hourly_rate : null;
+            $rate ??= $segment['hourly_rate'];
 
             if ($rate === null) {
                 throw new InvalidArgumentException(

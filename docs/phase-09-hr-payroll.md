@@ -200,6 +200,7 @@ PUT    /api/v1/leave-requests/{id}/reject
 | HR-08 | Payroll posting creates journal entries per unit | Observer on Posted transition |
 | HR-09 | Leave requests require manager approval | Workflow with approver_id |
 | HR-10 | Only HR role can create/edit employees; only HR + Accounting Manager can run payroll | Policy checks |
+| HR-11 | Pay terms (pay type, monthly salary, personal hourly rate) are versioned by effective date and never edited in place; payroll resolves them per day and prorates a mid-month change | `employee_compensations` (append-only, unique per employee + date); `PayrollService::calculate`; changes via `POST /employees/{id}/compensations` (HR, accounting, owner), never dated before the hire date or into a period whose payroll left review; a change reaching a calculated run flags it (`needs_recalculation`) and the run cannot be submitted until recalculated; a mistaken non-opening version not covered by frozen payroll can be removed (`DELETE /employees/{id}/compensations/{compensationId}`); the opening version moves with a hire-date correction; the employee row's copy of today's terms is re-synced daily by `hr:sync-pay-terms`. Known limit: payroll does not yet read `termination_date` (an employee is paid while their status is active) |
 
 ---
 

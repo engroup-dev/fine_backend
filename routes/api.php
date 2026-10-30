@@ -27,6 +27,7 @@ use App\Http\Controllers\Api\v1\FixedAssetController;
 use App\Http\Controllers\Api\v1\FxRateController;
 use App\Http\Controllers\Api\v1\GoodsReceiptController;
 use App\Http\Controllers\Api\v1\HeldCartController;
+use App\Http\Controllers\Api\v1\HrSettingsController;
 use App\Http\Controllers\Api\v1\InternalRestockController;
 use App\Http\Controllers\Api\v1\InventoryItemController;
 use App\Http\Controllers\Api\v1\InventoryMovementController;
@@ -271,6 +272,11 @@ Route::prefix('v1')->group(function () {
             Route::middleware(['require.role:owner,hr-manager,accounting-manager,unit_manager,manager,foam-manager,cutter-manager,furniture-manager,store-manager,procurement-manager', 'require.module:view-hr,manage-hr'])->group(function () {
                 Route::get('/employees/{id}/attendance', [EmployeeController::class, 'attendance']);
                 Route::get('/employees/{id}/payslips', [EmployeeController::class, 'payslips']);
+                Route::get('/employees/{id}/compensations', [EmployeeController::class, 'compensations']);
+                Route::post('/employees/{id}/compensations', [EmployeeController::class, 'storeCompensation']);
+                Route::delete('/employees/{id}/compensations/{compensationId}', [EmployeeController::class, 'destroyCompensation']);
+                Route::get('/hr-settings', [HrSettingsController::class, 'show']);
+                Route::put('/hr-settings', [HrSettingsController::class, 'update']);
                 Route::apiResource('employees', EmployeeController::class);
                 Route::get('/attendance', [AttendanceController::class, 'index']);
                 Route::post('/attendance', [AttendanceController::class, 'store']);

@@ -22,6 +22,7 @@ final class PayrollRun extends Model
         'company_id',
         'period',
         'status',
+        'needs_recalculation',
         'total_gross',
         'total_deductions',
         'total_net',
@@ -33,6 +34,7 @@ final class PayrollRun extends Model
 
     protected $casts = [
         'status' => PayrollRunStatus::class,
+        'needs_recalculation' => 'boolean',
         'total_gross' => 'decimal:4',
         'total_deductions' => 'decimal:4',
         'total_net' => 'decimal:4',
