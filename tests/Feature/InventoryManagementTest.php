@@ -163,6 +163,9 @@ test('cutter operator can process cut remnant by restocking remnant block with n
         'grade' => 'standard',
         'status' => 'available',
     ]);
+    $fill = InventoryItem::create([
+        'name' => 'Byproduct Fill', 'code' => 'FILL-CUT-01', 'item_type' => 'byproduct_fill', 'unit_of_measure' => 'kg',
+    ]);
 
     $response = $this->actingAs($this->user)
         ->withHeaders(['X-Operating-Unit-ID' => $this->unit->id])
@@ -184,6 +187,14 @@ test('cutter operator can process cut remnant by restocking remnant block with n
 
     $parentLot->refresh();
     expect($parentLot->status)->toBe('consumed');
+
+    // W4-06: the 2.4 m³ remnant takes 2.4/4 of the 600; the fill lot takes
+    // the other 240 at a per-kg price. Nothing is carried twice.
+    expect((float) $response->json('remnant_lot.unit_cost'))->toBe(360.0)
+        ->and($response->json('byproduct_lot.inventory_item_id'))->toBe($fill->id)
+        ->and((float) $response->json('byproduct_lot.quantity'))->toBe(5.5)
+        ->and(round((float) $response->json('byproduct_lot.unit_cost') * 5.5, 2))->toBe(240.0)
+        ->and((float) $parentLot->quantity)->toBe(0.0);
 });
 
 test('cutter operator can process cut remnant by converting remaining block to byproduct fill (Option C)', function () {
@@ -206,6 +217,9 @@ test('cutter operator can process cut remnant by converting remaining block to b
         'grade' => 'standard',
         'status' => 'available',
     ]);
+    InventoryItem::create([
+        'name' => 'Byproduct Fill', 'code' => 'FILL-CUT-02', 'item_type' => 'byproduct_fill', 'unit_of_measure' => 'kg',
+    ]);
 
     $response = $this->actingAs($this->user)
         ->withHeaders(['X-Operating-Unit-ID' => $this->unit->id])
@@ -219,7 +233,9 @@ test('cutter operator can process cut remnant by converting remaining block to b
         ->assertJsonPath('remnant_lot', null);
 
     $parentLot->refresh();
-    expect($parentLot->status)->toBe('consumed');
+    expect($parentLot->status)->toBe('consumed')
+        // W4-06: with no remnant the whole 450 rides on the 25 kg of fill.
+        ->and((float) $response->json('byproduct_lot.unit_cost'))->toBe(18.0);
 });
 
 test('can update an inventory item', function () {

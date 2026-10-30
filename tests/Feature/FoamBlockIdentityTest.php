@@ -14,6 +14,7 @@ use App\Models\UserRole;
 use App\Models\Warehouse;
 use App\Services\ProductionBatchService;
 use App\Services\StockLotService;
+use Database\Seeders\ChartOfAccountsTestSeeder;
 use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 
@@ -560,6 +561,7 @@ test('warehouses are listed for the current operating unit', function () {
 });
 
 test('remnant numbering uses a per parent revision counter', function () {
+    $this->seed(ChartOfAccountsTestSeeder::class);
     $batch = ($this->makeBatch)();
 
     ($this->api)()->postJson("/api/v1/production-batches/{$batch->id}/blocks", [
@@ -578,6 +580,8 @@ test('remnant numbering uses a per parent revision counter', function () {
     // Same second, same parent — the old time()-based scheme collided here.
     $remnant = StockLot::find($first->json('remnant_lot.id'));
     $remnant->update(['status' => 'available']);
+    // W4-06: a cut block leaves stock, so put the parent back to cut it again.
+    $parent->fresh()->update(['status' => 'available', 'quantity' => 1]);
 
     $second = ($this->api)()->postJson("/api/v1/stock-lots/{$parent->id}/process-cut-remnant", [
         'remnant_action' => 'restock_remnant',

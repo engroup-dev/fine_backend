@@ -177,13 +177,17 @@ class StockLotController extends Controller
             'remnant_dimensions.width_m' => ['required_if:remnant_action,restock_remnant', 'numeric', 'min:0.01'],
             'remnant_dimensions.height_m' => ['required_if:remnant_action,restock_remnant', 'numeric', 'min:0.01'],
             'byproduct_weight_kg' => ['nullable', 'numeric', 'min:0'],
+            // W4-06: the fill item the weighed byproduct is stocked as; the
+            // oldest byproduct fill item when omitted.
+            'byproduct_inventory_item_id' => ['nullable', 'uuid', Rule::exists('inventory_items', 'id')->where('item_type', 'byproduct_fill')->whereNull('deleted_at')],
         ]);
 
         $result = $this->stockLotService->processCutRemnant(
             $parentLot,
             $validated['remnant_action'],
             $validated['remnant_dimensions'] ?? null,
-            isset($validated['byproduct_weight_kg']) ? (float) $validated['byproduct_weight_kg'] : null
+            isset($validated['byproduct_weight_kg']) ? (float) $validated['byproduct_weight_kg'] : null,
+            $validated['byproduct_inventory_item_id'] ?? null,
         );
 
         return response()->json($result);

@@ -54,6 +54,9 @@ class CutterWorkOrderController extends Controller
             // CUT-block-sale: the precut block the customer is buying. Selected
             // at creation; price + dimensions are locked in at this moment.
             'stock_lot_id' => ['nullable', 'uuid', new ExistsInCurrentUnit(StockLot::class, 'stock lot')],
+            // W4-06: where the cut pieces, remnants and fill land (a warehouse
+            // of the order's unit); the first block's warehouse when omitted.
+            'output_warehouse_id' => ['nullable', 'uuid', new ExistsInCurrentUnit(Warehouse::class, 'warehouse')],
         ]);
 
         $unitId = $this->unitContext->getUnitId();
@@ -108,11 +111,21 @@ class CutterWorkOrderController extends Controller
 
         $validated = $request->validate([
             'status' => ['required', Rule::enum(CutterWorkOrderStatus::class)],
+            // W4-06: usable remnants are registered with the completion, each
+            // optionally naming the cut block it came from (else the first).
+            'remnants' => ['nullable', 'array', 'max:50', 'prohibited_unless:status,'.CutterWorkOrderStatus::Completed->value],
+            'remnants.*.length_m' => ['required', 'numeric', 'min:0.01'],
+            'remnants.*.width_m' => ['required', 'numeric', 'min:0.01'],
+            'remnants.*.height_m' => ['required', 'numeric', 'min:0.01'],
+            'remnants.*.stock_lot_id' => ['nullable', 'uuid'],
+            'output_warehouse_id' => ['nullable', 'uuid', 'prohibited_unless:status,'.CutterWorkOrderStatus::Completed->value, new ExistsInCurrentUnit(Warehouse::class, 'warehouse')],
         ]);
 
         $updated = $this->cutterService->transition(
             $order,
-            CutterWorkOrderStatus::from($validated['status'])
+            CutterWorkOrderStatus::from($validated['status']),
+            array_values($validated['remnants'] ?? []),
+            $validated['output_warehouse_id'] ?? null,
         );
 
         return response()->json($updated->load(['client', 'lines', 'byproductYields']));
@@ -191,7 +204,8 @@ class CutterWorkOrderController extends Controller
 
         $validated = $request->validate([
             'weight_kg' => ['required', 'numeric', 'min:0'],
-            'byproduct_inventory_item_id' => ['nullable', 'uuid', 'exists:inventory_items,id'],
+            // Only a byproduct fill item may receive the fill lot; its share books to 1133.
+            'byproduct_inventory_item_id' => ['nullable', 'uuid', Rule::exists('inventory_items', 'id')->where('item_type', 'byproduct_fill')->whereNull('deleted_at')],
             'warehouse_id' => ['nullable', 'uuid', new ExistsInCurrentUnit(Warehouse::class, 'warehouse')],
         ]);
 

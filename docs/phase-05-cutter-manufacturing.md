@@ -126,7 +126,9 @@ Result:
   - remainder automatically becomes ByproductYield (weight estimated or weighed)
   - stock_lot.status = "consumed" (full block consumed)
   
-[OPEN: Future enhancement] remainder could become new smaller StockLot if clean rectangle
+W4-06: a clean remainder registered at completion becomes a new smaller block StockLot
+(remnant_of_lot_id = the cut block) at its volume share of the block cost; only the
+rest of the offcut is byproduct.
 ```
 
 ---
@@ -191,7 +193,7 @@ POST   /api/v1/cutter-work-orders/{id}/byproduct-yields
 | CUT-05 | Template piece inventory uses template dimensions, not requested shape | StockLot created with template_shape dimensions |
 | CUT-06 | Client is billed for full template volume | SalesOrderLine uses template-derived unit cost and price |
 | CUT-07 | Full consumption: block status → Consumed, full cost to WIP | Model observer on consumption record |
-| CUT-08 | Partial consumption: consumed cost pro-rated; remainder → byproduct (v1 default) | Service method `CutterConsumptionService::processPartial()` |
+| CUT-08 | Partial consumption: the consumed block cost C splits by volume at completion (W4-06): pieces C × P/V, usable remnants C × R/V (restocked as smaller blocks of the block's item), byproduct C × S/V with S = V − P − R, priced per kg of the weigh-in (a zero weigh-in puts S on the pieces, and S = max(0, V − P − R)). Remnants claimed beyond what the pieces left are refused (`CUT_VOLUME_EXCEEDS_BLOCKS`, with a rounding tolerance per block, remnant and line); with no remnant nothing is refused, so pieces larger than the blocks just carry the whole cost (a deviation from the W4-06 plan's unconditional P + R > V refusal, kept so reserve-path and sale-component orders whose quantities round up can always complete; pending owner confirmation). Each remnant may name the cut block it came from (`stock_lot_id`, else the first block) and is restocked as that block's item; the remnants of one block must fit it (`CUT_VOLUME_EXCEEDS_BLOCKS`), the block must be one the order cut (`CUT_REMNANT_NO_SOURCE_BLOCK`) and have a size (`BLOCK_DIMENSIONS_REQUIRED`), and a remnant must measure at least 0.0001 m³ (`CUT_REMNANT_TOO_SMALL`). A positive weigh-in needs a byproduct fill item (`BYPRODUCT_ITEM_REQUIRED`) and always stocks a fill lot (named warehouse, else the output warehouse, else the first block's). Weigh-ins price the fill at the no-remnant split, shared by weight across all the order's weigh-ins: a later weigh-in re-prices the earlier untouched lots, and is refused if one has moved (`BYPRODUCT_ALREADY_MOVED`), so a completion without remnants never changes a fill price. A re-price is recorded as a zero-quantity `adjustment` movement (`reason = cutter_byproduct_reprice`); the yield movement keeps its weigh-in price (movements are append-only). At completion, remnants that would lower the price of a fill lot that has moved are refused (`BYPRODUCT_ALREADY_MOVED`; completing without remnants keeps the price). A moved lot whose price differs for any other reason (reserve-path lots weighed in before W4-06 were priced at 0) keeps its price and the difference stays on the pieces, as does the share of a pre-W4-06 positive weigh-in with no lot. Pieces, remnants and (by default) the weighed-in fill land in the order's `output_warehouse_id` (set on create or on the completion, a warehouse of the order's unit, `OUTPUT_WAREHOUSE_OTHER_UNIT`), else the first block's warehouse | `CutterWorkOrderService::splitCost()` / `produceOutputs()`; completion takes `remnants: [{length_m, width_m, height_m, stock_lot_id?}]` (max 50, sides ≥ 0.01) and `output_warehouse_id?`; journal DR 1132 + DR 1131 + DR 1133 / CR 1122 |
 | CUT-09 | Three StockMovement records per work order | Transactionally created on Completed transition |
 | CUT-10 | Slices are a distinct inventory item type | `inventory_items.item_type = slice` |
 

@@ -426,31 +426,136 @@ class StockLotService
     }
 
     /**
-     * Process cutter operator completion decision for a consumed foam block lot.
-     * Option C: Restock remnant block with manually specified dimensions (L x W x H) OR convert to byproduct fill.
+     * Process the cutter operator's completion decision for a foam block cut
+     * outside a work order. Option C: restock a remnant block with manually
+     * specified dimensions (L x W x H) OR convert the rest to byproduct fill.
+     *
+     * W4-06: value is conserved. The parent's cost C splits by volume: the
+     * remnant takes C × R / V and the rest of the block (C less the remnant)
+     * goes to a byproduct fill lot, priced per kg of the weigh-in. With
+     * nothing weighed in, that rest was lost and is written off to 52. The
+     * parent leaves stock (quantity 0) through its consumption movement, so
+     * no cost is carried twice, and only an available block can be cut.
+     *
+     * Journal: DR block account (remnant) + DR fill account (byproduct) or
+     * DR 52 (lost) / CR block account.
+     *
+     * @param  array{length_m: float|int|string, width_m: float|int|string, height_m: float|int|string}|null  $remnantDimensions
+     * @return array{parent_lot: StockLot|null, remnant_lot: StockLot|null, byproduct_lot: StockLot|null, byproduct_movement: InventoryMovement|null}
      */
     public function processCutRemnant(
         StockLot $parentLot,
         string $remnantAction,
         ?array $remnantDimensions = null,
-        ?float $byproductWeightKg = null
+        ?float $byproductWeightKg = null,
+        ?string $byproductItemId = null,
     ): array {
-        return DB::transaction(function () use ($parentLot, $remnantAction, $remnantDimensions, $byproductWeightKg) {
+        return DB::transaction(function () use ($parentLot, $remnantAction, $remnantDimensions, $byproductWeightKg, $byproductItemId) {
             // Lock the parent so the remnant revision counter cannot race.
             $parentLot = StockLot::whereKey($parentLot->getKey())->lockForUpdate()->firstOrFail();
+            $parentLot->loadMissing(['inventoryItem', 'warehouse.operatingUnit']);
 
-            // Mark parent block lot as consumed
-            $parentLot->update(['status' => 'consumed']);
+            if ($parentLot->status !== 'available') {
+                throw new LedgerRuleException(
+                    "Block {$parentLot->lot_number} is {$parentLot->status}; only an available block can be cut.",
+                    'LOT_NOT_AVAILABLE',
+                    ['status' => $parentLot->status],
+                );
+            }
+
+            // Only a foam block is cut; any other lot would be written off whole.
+            $itemType = InventoryItem::withTrashed()->whereKey($parentLot->inventory_item_id)->value('item_type');
+
+            if ($itemType !== 'foam_block') {
+                throw new LedgerRuleException(
+                    "Lot {$parentLot->lot_number} is not a foam block; only a foam block can be cut.",
+                    'LOT_NOT_FOAM_BLOCK',
+                    ['item_type' => $itemType],
+                );
+            }
+
+            // The split prices one block by its own volume, so the lot must
+            // hold exactly one block; a lot of several would be zeroed whole.
+            if ((float) $parentLot->quantity !== 1.0) {
+                throw new LedgerRuleException(
+                    "Lot {$parentLot->lot_number} holds {$parentLot->quantity} blocks; only a lot of a single block can be cut.",
+                    'LOT_NOT_SINGLE_BLOCK',
+                    ['quantity' => (float) $parentLot->quantity],
+                );
+            }
+
+            $restock = $remnantAction === 'restock_remnant';
+
+            if ($restock && (! $remnantDimensions || ! isset($remnantDimensions['length_m'], $remnantDimensions['width_m'], $remnantDimensions['height_m']))) {
+                throw new InvalidArgumentException('Remnant dimensions (length, width, height) are required when restocking remnant block.');
+            }
+
+            $unitId = $parentLot->warehouse?->operating_unit_id;
+            $quantity = (float) $parentLot->quantity;
+            $parentCost = round((float) $parentLot->unit_cost * $quantity, 4);
+            $parentVolume = (float) $parentLot->volume_m3;
+
+            // Measured as the remnant lot will store it (3-decimal sides).
+            $remnantVolume = $restock
+                ? round(round((float) $remnantDimensions['length_m'], 3) * round((float) $remnantDimensions['width_m'], 3) * round((float) $remnantDimensions['height_m'], 3), 4)
+                : 0.0;
+
+            if ($restock && $parentVolume <= 0) {
+                throw new LedgerRuleException(
+                    "Block {$parentLot->lot_number} has no recorded size (length, width and height), so no remnant of it can be priced.",
+                    'BLOCK_DIMENSIONS_REQUIRED',
+                );
+            }
+
+            if ($restock && $remnantVolume <= 0) {
+                throw new LedgerRuleException(
+                    'A remnant must measure at least 0.0001 m³ to be restocked.',
+                    'CUT_REMNANT_TOO_SMALL',
+                );
+            }
+
+            // Both volumes are kept to 4 decimals, so each may be off by half
+            // a unit in the last place.
+            if ($restock && $remnantVolume - $parentVolume > 0.0001) {
+                throw new LedgerRuleException(
+                    "A remnant of {$remnantVolume} m³ cannot come out of block {$parentLot->lot_number} of {$parentVolume} m³.",
+                    'CUT_VOLUME_EXCEEDS_BLOCKS',
+                    ['block_volume_m3' => $parentVolume, 'remnant_volume_m3' => $remnantVolume],
+                );
+            }
+
+            // The weighed fill is stocked as a byproduct fill item (the oldest
+            // one unless named); without one there is nothing to stock it as.
+            $fillItem = null;
+
+            if ($byproductWeightKg !== null && $byproductWeightKg > 0) {
+                $fillItem = $byproductItemId !== null
+                    ? InventoryItem::find($byproductItemId)
+                    : InventoryItem::where('item_type', 'byproduct_fill')->orderBy('created_at')->first();
+
+                if ($fillItem === null) {
+                    throw new LedgerRuleException(
+                        'Create a byproduct fill item before weighing in byproduct from a cut block.',
+                        'BYPRODUCT_ITEM_REQUIRED',
+                    );
+                }
+            }
+
+            $remnantCost = $restock ? round($parentCost * min(1.0, $remnantVolume / $parentVolume), 4) : 0.0;
+            $restCost = round($parentCost - $remnantCost, 4);
+
+            // The block leaves stock whole; its value moves to the outputs.
+            $parentLot->update(['status' => 'consumed', 'quantity' => 0]);
 
             // INV-06: consuming the parent block is an inventory event and must
             // leave a movement, not just a status change.
             InventoryMovement::create([
-                'operating_unit_id' => $parentLot->warehouse?->operating_unit_id,
+                'operating_unit_id' => $unitId,
                 'stock_lot_id' => $parentLot->id,
                 'from_warehouse_id' => $parentLot->warehouse_id,
                 'sku' => $parentLot->inventoryItem?->code ?? 'FOAM-BLOCK',
                 'movement_type' => 'consumption',
-                'quantity_delta' => -1,
+                'quantity_delta' => -$quantity,
                 'unit_cost' => (float) $parentLot->unit_cost,
                 'reason' => 'cutter_consumption',
                 'reference_document_type' => 'StockLot',
@@ -458,13 +563,10 @@ class StockLotService
             ]);
 
             $remnantLot = null;
+            $byproductLot = null;
             $byproductMovement = null;
 
-            if ($remnantAction === 'restock_remnant') {
-                if (! $remnantDimensions || ! isset($remnantDimensions['length_m'], $remnantDimensions['width_m'], $remnantDimensions['height_m'])) {
-                    throw new InvalidArgumentException('Remnant dimensions (length, width, height) are required when restocking remnant block.');
-                }
-
+            if ($restock) {
                 // Per-parent revision counter. The previous implementation appended
                 // time(), which collides for two remnants cut in the same second.
                 $revision = StockLot::withTrashed()
@@ -483,7 +585,7 @@ class StockLotService
                     'length_m' => (float) $remnantDimensions['length_m'],
                     'width_m' => (float) $remnantDimensions['width_m'],
                     'height_m' => (float) $remnantDimensions['height_m'],
-                    'unit_cost' => $parentLot->unit_cost,
+                    'unit_cost' => $remnantCost,
                     'grade' => $parentLot->grade,
                     'status' => 'available',
                     'production_batch_id' => $parentLot->production_batch_id,
@@ -491,36 +593,78 @@ class StockLotService
 
                 // The remnant is new stock, so it enters through a movement too.
                 InventoryMovement::create([
-                    'operating_unit_id' => $parentLot->warehouse?->operating_unit_id,
+                    'operating_unit_id' => $unitId,
                     'stock_lot_id' => $remnantLot->id,
                     'to_warehouse_id' => $remnantLot->warehouse_id,
                     'sku' => $parentLot->inventoryItem?->code ?? 'FOAM-BLOCK',
                     'movement_type' => 'production_output',
                     'quantity_delta' => 1,
-                    'unit_cost' => (float) $remnantLot->unit_cost,
+                    'unit_cost' => $remnantCost,
                     'reason' => 'cutter_remnant_restock',
                     'reference_document_type' => 'StockLot',
                     'reference_id' => $parentLot->id,
                 ]);
             }
 
-            if ($byproductWeightKg !== null && $byproductWeightKg > 0) {
+            if ($fillItem !== null) {
+                // The fill is real stock with its share of the block, not a
+                // lot-less movement.
+                $byproductLot = StockLot::create([
+                    'inventory_item_id' => $fillItem->id,
+                    'warehouse_id' => $parentLot->warehouse_id,
+                    'bin_location' => ItemStockLevel::binFor($fillItem->id, $parentLot->warehouse_id),
+                    'lot_number' => 'BYP-'.$parentLot->lot_number,
+                    'quantity' => $byproductWeightKg,
+                    'weight_kg' => $byproductWeightKg,
+                    'unit_cost' => round($restCost / $byproductWeightKg, 4),
+                    'status' => 'available',
+                ]);
+
                 $byproductMovement = InventoryMovement::create([
                     'id' => (string) Str::uuid(),
-                    'operating_unit_id' => $parentLot->warehouse?->operating_unit_id,
+                    'operating_unit_id' => $unitId,
+                    'stock_lot_id' => $byproductLot->id,
                     'to_warehouse_id' => $parentLot->warehouse_id,
-                    'sku' => 'BYPRODUCT-FILL',
+                    'sku' => $fillItem->code ?? 'BYPRODUCT-FILL',
                     'movement_type' => 'byproduct_yield',
                     'quantity_delta' => $byproductWeightKg,
+                    'unit_cost' => (float) $byproductLot->unit_cost,
                     'reason' => "Cutter byproduct fill from block {$parentLot->lot_number}",
                     'reference_document_type' => 'StockLot',
                     'reference_id' => $parentLot->id,
                 ]);
             }
 
+            if ($parentCost > 0) {
+                $lines = [];
+
+                if ($remnantLot !== null && $remnantCost > 0) {
+                    // INV-11: the remnant is a block again, in its item's account.
+                    $lines[] = ['account_code' => InventoryAccounts::forLot($remnantLot), 'debit' => $remnantCost, 'operating_unit_id' => $unitId];
+                }
+
+                if ($restCost > 0) {
+                    $lines[] = $byproductLot !== null
+                        ? ['account_code' => InventoryAccounts::forLot($byproductLot), 'debit' => $restCost, 'operating_unit_id' => $unitId]
+                        // Nothing salvaged: the rest of the block was lost.
+                        : ['account_code' => '52', 'debit' => $restCost, 'operating_unit_id' => $unitId];
+                }
+
+                $lines[] = ['account_code' => InventoryAccounts::forLot($parentLot), 'credit' => $parentCost, 'operating_unit_id' => $unitId];
+
+                $this->accountingService->postJournal(
+                    "Block {$parentLot->lot_number} cut: remnant and byproduct",
+                    $lines,
+                    'StockLot',
+                    $parentLot->id,
+                    $parentLot->warehouse?->operatingUnit?->company_id,
+                );
+            }
+
             return [
                 'parent_lot' => $parentLot->fresh(['inventoryItem', 'warehouse']),
                 'remnant_lot' => $remnantLot ? $remnantLot->fresh(['inventoryItem', 'warehouse']) : null,
+                'byproduct_lot' => $byproductLot ? $byproductLot->fresh(['inventoryItem', 'warehouse']) : null,
                 'byproduct_movement' => $byproductMovement,
             ];
         });

@@ -65,8 +65,9 @@ use Illuminate\Support\Facades\DB;
  *    hand-costed closes only; never for a batch whose chemicals were issued,
  *    which is already posted).
  *  - Blocks consumed through a cut-remnant decision with no remnant restocked
- *    (StockLotService::processCutRemnant) leave their value on the lot
- *    account with no entry; --post expenses it to 52, and the run says so.
+ *    before W4-06 (StockLotService::processCutRemnant) left their value on
+ *    the lot account with no entry; --post expenses it to 52, and the run
+ *    says so. The decision now posts its own entry and zeroes the block.
  *  - Lot-account lines with no operating unit, and lots or lines of units
  *    that are deleted, are shown on an "unattributed" row and warned about,
  *    never posted: no unit entry can correct them.

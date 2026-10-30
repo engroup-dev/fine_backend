@@ -15,6 +15,7 @@ use App\Models\CutterWorkOrder;
 use App\Models\Entity;
 use App\Models\FiscalPeriod;
 use App\Models\InventoryItem;
+use App\Models\InventoryMovement;
 use App\Models\JournalEntry;
 use App\Models\JournalLine;
 use App\Models\OperatingUnit;
@@ -476,8 +477,15 @@ test('a fill lot weighed in on an unfinished cutter order counts only once the o
 });
 
 test('reconcile warns before expensing a block consumed by a cut-remnant decision with no remnant restocked', function () {
+    // Before W4-06 the decision consumed the block with no entry and left its
+    // quantity on the lot; such legacy blocks still warn.
     $block = ($this->intake)($this->foam, 1, 300);
-    app(StockLotService::class)->processCutRemnant($block, 'convert_to_byproduct', null, 5.0);
+    $block->update(['status' => 'consumed']);
+    InventoryMovement::create([
+        'operating_unit_id' => $this->unitA->id, 'stock_lot_id' => $block->id, 'from_warehouse_id' => $this->warehouseA->id,
+        'sku' => 'BLK-D25', 'movement_type' => 'consumption', 'quantity_delta' => -1, 'unit_cost' => 300,
+        'reason' => 'cutter_consumption', 'reference_document_type' => 'StockLot', 'reference_id' => $block->id,
+    ]);
 
     $this->artisan('inventory:reconcile-accounts')
         ->expectsTable(['Unit', 'Account', 'Expected', 'Actual', 'Difference'], [

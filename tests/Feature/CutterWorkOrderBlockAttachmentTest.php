@@ -201,7 +201,12 @@ it('advancing to in_production consumes the reserved block and creates a FoamBlo
 
     $consumption = FoamBlockConsumption::where('stock_lot_id', $this->block->id)->first();
     expect($consumption)->not->toBeNull();
-    expect((float) $consumption->consumed_cost)->toBe(500.0);
+    // W4-06: the 1 m³ template takes a third of the 3 m³ block; the offcut
+    // carries the rest, and the two still sum to the block's 500.
+    expect((float) $consumption->consumed_cost)->toBe(166.6667)
+        ->and((float) $consumption->remainder_cost)->toBe(333.3333)
+        ->and($consumption->consumption_type)->toBe('partial')
+        ->and($consumption->totalCost())->toBe(500.0);
 });
 
 it('completing the order produces pieces that carry source_stock_lot_id + source_block dims', function () {
@@ -396,7 +401,9 @@ it('advancing to in_production consumes every attached block', function () {
     expect($this->block->fresh()->status)->toBe('consumed')
         ->and($secondBlock->fresh()->status)->toBe('consumed')
         ->and(FoamBlockConsumption::count())->toBe(2)
-        ->and((float) FoamBlockConsumption::sum('consumed_cost'))->toBe(800.0);
+        // W4-06: 0.28 m³ of templates out of 5 m³ of blocks (5.6% of each).
+        ->and(round((float) FoamBlockConsumption::sum('consumed_cost'), 4))->toBe(44.8)
+        ->and(round((float) FoamBlockConsumption::sum('consumed_cost') + (float) FoamBlockConsumption::sum('remainder_cost'), 4))->toBe(800.0);
 });
 
 it('can detach an attached block before production', function () {

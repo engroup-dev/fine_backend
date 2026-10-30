@@ -30,6 +30,7 @@ final class CutterWorkOrder extends Model
         'order_number',
         'status',
         'notes',
+        'output_warehouse_id',
         'record_version',
     ];
 
@@ -51,6 +52,15 @@ final class CutterWorkOrder extends Model
     public function blocks(): HasMany
     {
         return $this->hasMany(CutterWorkOrderBlock::class)->orderBy('created_at');
+    }
+
+    /**
+     * W4-06: where the order's cut pieces, restocked remnants and weighed-in
+     * fill land. Null falls back to the first block's warehouse.
+     */
+    public function outputWarehouse(): BelongsTo
+    {
+        return $this->belongsTo(Warehouse::class, 'output_warehouse_id');
     }
 
     public function client(): BelongsTo

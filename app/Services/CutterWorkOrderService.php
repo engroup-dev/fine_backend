@@ -23,6 +23,7 @@ use App\Models\SaleComponentAllocation;
 use App\Models\SalesOrder;
 use App\Models\StockLot;
 use App\Models\User;
+use App\Models\Warehouse;
 use App\Support\InventoryAccounts;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Database\Eloquent\Builder;
@@ -37,6 +38,19 @@ class CutterWorkOrderService
      * treated as fully consumed — there is no usable offcut worth tracking.
      */
     private const FULL_CONSUMPTION_TOLERANCE = 0.02;
+
+    /**
+     * Lot volumes are kept to 4 decimals and template volumes to 6, so every
+     * block, remnant and line in a volume comparison may be off by up to half
+     * a unit in the 4th decimal. The tolerance scales with how many there are.
+     */
+    private const VOLUME_ROUNDING_TOLERANCE = 0.00005;
+
+    /**
+     * Reason on the zero-quantity revaluation movement that records a fill
+     * lot re-priced by a later weigh-in or the completion (W4-06).
+     */
+    private const BYPRODUCT_REPRICE_REASON = 'cutter_byproduct_reprice';
 
     public function __construct(
         private readonly AccountingService $accountingService,
@@ -57,6 +71,10 @@ class CutterWorkOrderService
                 ...$orderAttrs,
                 'order_number' => $orderAttrs['order_number'] ?? $this->documentNumbers->next(DocumentNumberService::CUTTER_WORK_ORDER),
             ]);
+
+            if ($order->output_warehouse_id !== null) {
+                $this->assertOutputWarehouse($order, $order->output_warehouse_id);
+            }
 
             if ($block !== null) {
                 $this->reserveBlock($order, $block);
@@ -355,10 +373,11 @@ class CutterWorkOrderService
     /**
      * Record the manager's choice and move the block's value into the order.
      *
-     * The whole block leaves stock either way (v1: no clean-remainder
-     * restocking). Its cost splits into the template's share and the offcut's,
-     * and those two always sum back to the block's full cost so nothing is left
-     * unaccounted between the block and its outputs.
+     * The whole block leaves stock either way. Its cost splits into the
+     * template's share and the offcut's, and those two always sum back to the
+     * block's full cost so nothing is left unaccounted between the block and
+     * its outputs. Completion makes the final split by volume across pieces,
+     * restocked remnants and byproduct (W4-06, see splitCost()).
      */
     public function selectBlock(CutterWorkOrderLine $line, StockLot $block): FoamBlockConsumption
     {
@@ -454,6 +473,16 @@ class CutterWorkOrderService
      * Zero is a valid, meaningful answer — it says someone looked and there was
      * nothing to salvage. A missing row says nobody checked, which is why the
      * order cannot move past this point without one.
+     *
+     * W4-06: anything weighed in becomes a fill lot (so a byproduct item is
+     * required), in the named warehouse, else the order's output warehouse.
+     * The byproduct carries the block cost of the volume the templates did
+     * not take (C × S / V; remnants are only known at completion), shared by
+     * weight across every weigh-in of the order. A later weigh-in re-shares
+     * it, re-pricing the earlier fill lots (each through an appended
+     * revaluation movement), so all the order's fill carries one price and a
+     * completion without remnants never changes it. It is refused if an
+     * earlier fill lot has already moved (BYPRODUCT_ALREADY_MOVED).
      */
     public function recordWeighIn(
         CutterWorkOrder $order,
@@ -472,27 +501,53 @@ class CutterWorkOrderService
             );
         }
 
+        if ($weightKg > 0 && $byproductItemId === null) {
+            throw new SalesRuleException(
+                "Choose the byproduct fill item the {$weightKg} kg weighed in on order {$order->order_number} is stocked as, or enter 0 if nothing was salvaged.",
+                'BYPRODUCT_ITEM_REQUIRED',
+            );
+        }
+
         return DB::transaction(function () use ($order, $weightKg, $byproductItemId, $warehouseId, $weighedBy): ByproductYield {
-            // The offcut carries the part of the block cost the template did not.
-            $remainderCost = round((float) $order->consumptions()->sum('remainder_cost'), 4);
+            $locked = CutterWorkOrder::whereKey($order->getKey())->lockForUpdate()->firstOrFail();
+
+            if ($locked->status !== CutterWorkOrderStatus::AwaitingByproductWeighIn) {
+                throw new InvalidStateTransitionException(
+                    "Order {$locked->order_number} is {$locked->status->value}; a weigh-in belongs at the awaiting_byproduct_weigh_in step."
+                );
+            }
 
             $lot = null;
+            $yieldCost = 0.0;
 
-            if ($weightKg > 0 && $byproductItemId !== null && $warehouseId !== null) {
+            if ($weightKg > 0) {
+                $lines = $locked->lines()->with('consumptions.stockLot')->get();
+                $warehouseId ??= $this->outputWarehouseId($locked, $locked->blocks()->with('stockLot')->first(), $lines);
+
+                $earlier = $this->salvagedYields($locked);
+                $byproductCost = $this->splitCost($locked, $lines, [], true)['byproduct_cost'];
+                $shares = $this->shareByWeight(
+                    [...$earlier->map(fn (ByproductYield $y) => (float) $y->weight_kg)->all(), $weightKg],
+                    $byproductCost,
+                );
+                $yieldCost = (float) array_pop($shares);
+
+                $this->reshareEarlierWeighIns($locked, $earlier, $shares);
+
                 $lot = StockLot::create([
                     'inventory_item_id' => $byproductItemId,
                     'warehouse_id' => $warehouseId,
-                    'lot_number' => 'BYP-'.$order->order_number.'-'.now()->format('YmdHis'),
+                    'lot_number' => 'BYP-'.$locked->order_number.'-'.now()->format('YmdHis'),
                     'quantity' => $weightKg,
                     'weight_kg' => $weightKg,
-                    'unit_cost' => $weightKg > 0 ? round($remainderCost / $weightKg, 4) : 0,
+                    'unit_cost' => round($yieldCost / $weightKg, 4),
                     'status' => 'available',
                     'bin_location' => ItemStockLevel::binFor($byproductItemId, $warehouseId),
                 ]);
 
                 // Movement 2 of 3: byproduct fill enters cutter inventory.
                 InventoryMovement::create([
-                    'operating_unit_id' => $order->operating_unit_id,
+                    'operating_unit_id' => $locked->operating_unit_id,
                     'stock_lot_id' => $lot->id,
                     'to_warehouse_id' => $warehouseId,
                     'sku' => InventoryItem::find($byproductItemId)?->code ?? 'BYPRODUCT-FILL',
@@ -501,26 +556,82 @@ class CutterWorkOrderService
                     'unit_cost' => $lot->unit_cost,
                     'reason' => 'cutter_byproduct',
                     'reference_document_type' => 'CutterWorkOrder',
-                    'reference_id' => $order->id,
+                    'reference_id' => $locked->id,
                 ]);
             }
 
             return ByproductYield::create([
-                'cutter_work_order_id' => $order->id,
+                'cutter_work_order_id' => $locked->id,
                 'stock_lot_id' => $lot?->id,
                 'weight_kg' => $weightKg,
                 // Nothing salvaged means the offcut was genuinely lost, so its
                 // value stays in WIP and lands on the cut pieces instead.
-                'yield_cost' => $weightKg > 0 ? $remainderCost : 0,
+                'yield_cost' => $yieldCost,
                 'weighed_by_user_id' => $weighedBy?->id,
                 'weighed_at' => now(),
             ]);
         });
     }
 
-    public function transition(CutterWorkOrder $order, CutterWorkOrderStatus $target): CutterWorkOrder
+    /**
+     * W4-06: a new weigh-in re-shares the byproduct cost, so each earlier one
+     * takes its new weight share. An earlier fill lot whose price changes must
+     * still hold its weigh-in untouched (else BYPRODUCT_ALREADY_MOVED, before
+     * anything is written); it is re-priced through an appended revaluation
+     * movement.
+     *
+     * @param  Collection<int, ByproductYield>  $earlier
+     * @param  list<float>  $shares  each earlier yield's new share, in order
+     */
+    private function reshareEarlierWeighIns(CutterWorkOrder $order, Collection $earlier, array $shares): void
     {
-        return DB::transaction(function () use ($order, $target): CutterWorkOrder {
+        $reprices = [];
+
+        foreach ($earlier->values() as $index => $yield) {
+            $lot = $yield->stockLot;
+
+            if ($lot === null) {
+                continue;
+            }
+
+            $unitCost = round($shares[$index] / (float) $yield->weight_kg, 4);
+
+            if ($unitCost === round((float) $lot->unit_cost, 4)) {
+                continue;
+            }
+
+            if ($this->byproductLotMoved($lot, (float) $yield->weight_kg)) {
+                throw new SalesRuleException(
+                    "Byproduct lot {$lot->lot_number} of an earlier weigh-in on order {$order->order_number} has moved, so a further weigh-in cannot re-share the byproduct cost with it; record no further weigh-in, or bring the lot back to its weighed quantity first.",
+                    'BYPRODUCT_ALREADY_MOVED',
+                    ['stock_lot_id' => $lot->id],
+                );
+            }
+
+            $reprices[$index] = $unitCost;
+        }
+
+        foreach ($earlier->values() as $index => $yield) {
+            $yield->yield_cost = $shares[$index];
+            $yield->save();
+
+            if (isset($reprices[$index])) {
+                $this->repriceFillLot($order, $yield->stockLot, $reprices[$index]);
+            }
+        }
+    }
+
+    /**
+     * Remnants are the usable offcuts registered when the order completes
+     * (W4-06); any other step takes none. Each may name the cut block it came
+     * from (stock_lot_id), else it is the order's first block. The completion
+     * may also set the order's output warehouse.
+     *
+     * @param  list<array{length_m: float|int|string, width_m: float|int|string, height_m: float|int|string, stock_lot_id?: string|null}>  $remnants
+     */
+    public function transition(CutterWorkOrder $order, CutterWorkOrderStatus $target, array $remnants = [], ?string $outputWarehouseId = null): CutterWorkOrder
+    {
+        return DB::transaction(function () use ($order, $target, $remnants, $outputWarehouseId): CutterWorkOrder {
             $locked = CutterWorkOrder::whereKey($order->getKey())->lockForUpdate()->firstOrFail();
             $current = $locked->status;
 
@@ -536,6 +647,11 @@ class CutterWorkOrderService
 
             $this->guardTransition($locked, $target);
 
+            if ($target === CutterWorkOrderStatus::Completed && $outputWarehouseId !== null) {
+                $this->assertOutputWarehouse($locked, $outputWarehouseId);
+                $locked->output_warehouse_id = $outputWarehouseId;
+            }
+
             $locked->status = $target;
             $locked->save();
 
@@ -548,7 +664,7 @@ class CutterWorkOrderService
             }
 
             if ($target === CutterWorkOrderStatus::Completed) {
-                $this->produceOutputs($locked);
+                $this->produceOutputs($locked, $remnants);
                 $this->fulfillMaterialRequestsFor($locked);
             }
 
@@ -582,28 +698,47 @@ class CutterWorkOrderService
      * no longer reserved is skipped. The consumption rows hang off the first
      * line — they record that the block went into this order.
      *
+     * W4-06: each block's cost splits between the templates and the offcut by
+     * the order's template volume over all its block volume (the same share
+     * for every block), instead of the whole cost being booked as consumed.
+     * Completion makes the final split once remnants are known.
+     *
      * @return array<int, FoamBlockConsumption>
      */
     public function consumeReservedBlocks(CutterWorkOrder $order): array
     {
-        $firstLine = $order->lines()->first();
+        $lines = $order->lines()->get();
+        $firstLine = $lines->first();
         $consumptions = [];
 
-        foreach ($order->blocks()->get() as $attached) {
+        $attachedBlocks = $order->blocks()->with('stockLot')->get();
+        $reserved = $attachedBlocks->filter(fn (CutterWorkOrderBlock $b) => $b->stockLot?->status === 'reserved');
+        $templateVolume = (float) $lines->sum(fn (CutterWorkOrderLine $l) => $l->requiredVolumeM3());
+        $blockVolume = (float) $reserved->sum(fn (CutterWorkOrderBlock $b) => $this->attachedVolume($b))
+            + (float) $order->consumptions()->sum('block_volume_m3');
+        $usedShare = $blockVolume > 0 ? min(1.0, $templateVolume / $blockVolume) : 1.0;
+        $isFull = (1 - $usedShare) <= ($usedShare * self::FULL_CONSUMPTION_TOLERANCE);
+
+        foreach ($attachedBlocks as $attached) {
             $locked = StockLot::whereKey($attached->stock_lot_id)->lockForUpdate()->first();
 
             if ($locked === null || $locked->status !== 'reserved') {
                 continue;
             }
 
+            $cost = (float) $attached->unit_cost_snapshot;
+            $volume = $this->attachedVolume($attached);
+            // CUT-07 / CUT-08
+            $consumedCost = $isFull ? $cost : round($cost * $usedShare, 4);
+
             $consumptions[] = FoamBlockConsumption::create([
                 'cutter_work_order_line_id' => $firstLine?->id,
                 'stock_lot_id' => $locked->id,
-                'block_volume_m3' => (float) $locked->volume_m3,
-                'volume_consumed_m3' => (float) $locked->volume_m3,
-                'consumption_type' => 'full',
-                'consumed_cost' => (float) $attached->unit_cost_snapshot,
-                'remainder_cost' => 0,
+                'block_volume_m3' => $volume,
+                'volume_consumed_m3' => $isFull ? $volume : round($volume * $usedShare, 6),
+                'consumption_type' => $isFull ? 'full' : 'partial',
+                'consumed_cost' => $consumedCost,
+                'remainder_cost' => round($cost - $consumedCost, 4),
             ]);
 
             $locked->status = 'consumed';
@@ -626,6 +761,15 @@ class CutterWorkOrderService
         }
 
         return $consumptions;
+    }
+
+    /**
+     * An attached block's volume: the lot's own, else the size snapshotted
+     * when it was reserved.
+     */
+    private function attachedVolume(CutterWorkOrderBlock $attached): float
+    {
+        return (float) ($attached->stockLot?->volume_m3 ?? $attached->volume_m3_snapshot ?? 0);
     }
 
     private function guardTransition(CutterWorkOrder $order, CutterWorkOrderStatus $target): void
@@ -686,17 +830,116 @@ class CutterWorkOrderService
     }
 
     /**
-     * On completion the order's accumulated material moves out of WIP and into
-     * the cut pieces, less whatever the byproduct already absorbed. Every line
-     * gets its pieces; the cost is shared by the volume each line cut (a
-     * 2 m seat carries more foam than a cushion). Pieces cut for a sale land
-     * reserved and set aside for it.
+     * W4-06: the block cost C consumed by the order (its WIP) splits by
+     * volume. V is the volume of every block cut, P the template volume
+     * (template × quantity of every line), R the volume of the usable
+     * remnants restocked, and S = V − P − R the offcut left as byproduct:
+     *
+     *   pieces    C × P / V
+     *   remnants  C × r / V each
+     *   byproduct C × S / V, only when something was weighed in; a zero
+     *             weigh-in means the offcut was lost, so its value lands on
+     *             the pieces instead
+     *
+     * Rounding goes into the pieces, so the three always sum back to C. Blocks
+     * with no recorded size (V = 0) put the whole cost on the pieces.
+     *
+     * @param  Collection<int, CutterWorkOrderLine>  $lines
+     * @param  list<float>  $remnantVolumes
+     * @return array{block_volume: float, piece_volume: float, remnant_volume: float, byproduct_volume: float, piece_cost: float, remnant_costs: list<float>, byproduct_cost: float}
      */
-    private function produceOutputs(CutterWorkOrder $order): void
+    private function splitCost(CutterWorkOrder $order, Collection $lines, array $remnantVolumes, bool $byproductSalvaged): array
     {
-        $byproductCost = round((float) $order->byproductYields()->sum('yield_cost'), 4);
-        $pieceCost = round((float) $order->wip_cost - $byproductCost, 4);
+        $cost = round((float) $order->wip_cost, 4);
+        $blockVolume = round((float) $order->consumptions()->sum('block_volume_m3'), 6);
+        $pieceVolume = round((float) $lines->sum(fn (CutterWorkOrderLine $l) => $l->requiredVolumeM3()), 6);
+        $remnantVolume = round(array_sum($remnantVolumes), 6);
+        $byproductVolume = round(max(0.0, $blockVolume - $pieceVolume - $remnantVolume), 6);
 
+        $remnantCosts = [];
+        $byproductCost = 0.0;
+
+        if ($blockVolume > 0) {
+            foreach ($remnantVolumes as $volume) {
+                $remnantCosts[] = round($cost * $volume / $blockVolume, 4);
+            }
+
+            if ($byproductSalvaged) {
+                $byproductCost = round($cost * $byproductVolume / $blockVolume, 4);
+            }
+        }
+
+        return [
+            'block_volume' => $blockVolume,
+            'piece_volume' => $pieceVolume,
+            'remnant_volume' => $remnantVolume,
+            'byproduct_volume' => $byproductVolume,
+            'piece_cost' => round($cost - array_sum($remnantCosts) - $byproductCost, 4),
+            'remnant_costs' => $remnantCosts,
+            'byproduct_cost' => $byproductCost,
+        ];
+    }
+
+    /**
+     * A remnant's volume exactly as its lot will store it (dimensions kept to
+     * 3 decimals, volume to 4), so its cost share matches the lot.
+     *
+     * @param  array{length_m: float|int|string, width_m: float|int|string, height_m: float|int|string}  $remnant
+     */
+    private function remnantVolume(array $remnant): float
+    {
+        return round(
+            round((float) $remnant['length_m'], 3) * round((float) $remnant['width_m'], 3) * round((float) $remnant['height_m'], 3),
+            4,
+        );
+    }
+
+    /**
+     * Where the order's outputs (cut pieces and restocked remnants) land: the
+     * order's output warehouse, else the warehouse of its first block, else of
+     * its first consumed block, else the unit's first warehouse.
+     *
+     * @param  Collection<int, CutterWorkOrderLine>  $lines
+     */
+    private function outputWarehouseId(CutterWorkOrder $order, ?CutterWorkOrderBlock $firstBlock, Collection $lines): string
+    {
+        return $order->output_warehouse_id
+            ?? $firstBlock?->stockLot?->warehouse_id
+            ?? $lines->flatMap->consumptions->first()?->stockLot?->warehouse_id
+            ?? $this->stockIssueService->receivingWarehouse($order->operating_unit_id)->id;
+    }
+
+    /**
+     * The output warehouse must be one of the order's own unit.
+     */
+    private function assertOutputWarehouse(CutterWorkOrder $order, string $warehouseId): void
+    {
+        $unitId = Warehouse::withoutGlobalScopes()->whereKey($warehouseId)->value('operating_unit_id');
+
+        if ($unitId === null || $unitId !== $order->operating_unit_id) {
+            throw new SalesRuleException(
+                "The output warehouse of order {$order->order_number} must belong to its own unit.",
+                'OUTPUT_WAREHOUSE_OTHER_UNIT',
+                ['warehouse_id' => $warehouseId],
+            );
+        }
+    }
+
+    /**
+     * On completion the order's accumulated material moves out of WIP and is
+     * split by volume (W4-06, splitCost()) into the cut pieces, the usable
+     * remnants registered now (restocked as smaller blocks of the block's
+     * item) and the byproduct weighed in. Every line gets its pieces; the
+     * pieces' cost is shared by the volume each line cut (a 2 m seat carries
+     * more foam than a cushion). Pieces cut for a sale land reserved and set
+     * aside for it.
+     *
+     * Journal: DR 1132 pieces + DR 1131 remnants + DR 1133 byproduct / CR 1122.
+     *
+     * @param  list<array{length_m: float|int|string, width_m: float|int|string, height_m: float|int|string}>  $remnants
+     */
+    private function produceOutputs(CutterWorkOrder $order, array $remnants = []): void
+    {
         $lines = $order->lines()->with(['consumptions.stockLot', 'saleComponent.line', 'outputItem'])->get();
         $totalPieces = (int) $lines->sum('quantity');
 
@@ -704,10 +947,59 @@ class CutterWorkOrderService
             return;
         }
 
+        $salvaged = $this->salvagedYields($order);
+
         $firstBlock = $order->blocks()->with('stockLot')->first();
-        $warehouseId = $firstBlock?->stockLot?->warehouse_id
-            ?? $lines->flatMap->consumptions->first()?->stockLot?->warehouse_id
-            ?? $this->stockIssueService->receivingWarehouse($order->operating_unit_id)->id;
+        $consumptions = $lines->flatMap->consumptions->values();
+        $remnants = $this->resolveRemnants($order, array_values($remnants), $consumptions, $firstBlock);
+        $remnantVolumes = array_column($remnants, 'volume');
+
+        $split = $this->splitCost($order, $lines, $remnantVolumes, $salvaged->isNotEmpty());
+
+        // P + R cannot exceed the blocks actually cut: a remnant can only come
+        // out of what the pieces left. With no remnant claimed nothing is
+        // refused (pieces larger than the blocks just carry the whole cost),
+        // so an order that got past the block step can always complete.
+        if ($remnants !== []) {
+            $room = max(0.0, $split['block_volume'] - $split['piece_volume']);
+            $tolerance = self::VOLUME_ROUNDING_TOLERANCE * ($consumptions->count() + count($remnants) + $lines->count());
+
+            if ($tolerance < $split['remnant_volume'] - $room) {
+                $claimed = round($split['piece_volume'] + $split['remnant_volume'], 6);
+
+                throw new SalesRuleException(
+                    "Order {$order->order_number} claims {$claimed} m³ of pieces and remnants from {$split['block_volume']} m³ of blocks.",
+                    'CUT_VOLUME_EXCEEDS_BLOCKS',
+                    [
+                        'block_volume_m3' => $split['block_volume'],
+                        'piece_volume_m3' => $split['piece_volume'],
+                        'remnant_volume_m3' => $split['remnant_volume'],
+                    ],
+                );
+            }
+        }
+
+        // What the weigh-ins priced the fill at: the same split with no
+        // remnant. Only remnants can change a fill price from here.
+        $baseByproductCost = $remnants === []
+            ? $split['byproduct_cost']
+            : $this->splitCost($order, $lines, [], $salvaged->isNotEmpty())['byproduct_cost'];
+        $byproduct = $this->resolveByproduct($order, $salvaged, $split['byproduct_cost'], $baseByproductCost, $remnants !== []);
+
+        // Whatever of the byproduct share the fill does not carry (a legacy
+        // weigh-in with no lot, or a moved lot kept at its weigh-in price)
+        // stays on the pieces, so the outputs still sum to C.
+        $pieceCost = round($split['piece_cost'] + $byproduct['to_pieces'], 4);
+
+        if ($pieceCost < 0) {
+            throw new SalesRuleException(
+                "The byproduct of order {$order->order_number} has moved since its weigh-in at a price the completion can no longer carry; bring the fill lots back to their weighed quantity first.",
+                'BYPRODUCT_ALREADY_MOVED',
+                ['piece_cost' => $pieceCost],
+            );
+        }
+
+        $warehouseId = $this->outputWarehouseId($order, $firstBlock, $lines);
 
         $totalVolume = (float) $lines->sum(fn (CutterWorkOrderLine $l) => $l->requiredVolumeM3());
         $allocated = 0.0;
@@ -794,34 +1086,20 @@ class CutterWorkOrderService
             }
         }
 
+        $remnantCostByAccount = $this->restockRemnants($order, $remnants, $split['remnant_costs'], $warehouseId);
+        $byproductByAccount = $this->priceByproduct($order, $byproduct['entries']);
+
         $journalLines = [];
 
-        if ($pieceCost > 0) {
-            foreach ($pieceCostByAccount as $account => $amount) {
+        foreach ([$pieceCostByAccount, $remnantCostByAccount, $byproductByAccount] as $byAccount) {
+            foreach ($byAccount as $account => $amount) {
                 if ($amount > 0) {
                     $journalLines[] = ['account_code' => (string) $account, 'debit' => $amount, 'operating_unit_id' => $order->operating_unit_id];
                 }
             }
         }
 
-        if ($byproductCost > 0) {
-            // INV-11: the fill lot's own account; a yield with no lot keeps 1133.
-            $byproductByAccount = [];
-            foreach ($order->byproductYields()->with(['stockLot' => fn ($q) => $q->withoutGlobalScopes()->with('inventoryItem')])->get() as $yield) {
-                $account = $yield->stockLot !== null
-                    ? InventoryAccounts::forLot($yield->stockLot)
-                    : InventoryAccounts::forItemType('byproduct_fill');
-                $byproductByAccount[$account] = round(($byproductByAccount[$account] ?? 0) + (float) $yield->yield_cost, 4);
-            }
-
-            foreach ($byproductByAccount as $account => $amount) {
-                if ($amount > 0) {
-                    $journalLines[] = ['account_code' => (string) $account, 'debit' => $amount, 'operating_unit_id' => $order->operating_unit_id];
-                }
-            }
-        }
-
-        $total = round($pieceCost + $byproductCost, 4);
+        $total = round($pieceCost + array_sum($split['remnant_costs']) + array_sum(array_column($byproduct['entries'], 'value')), 4);
 
         if ($total <= 0) {
             return;
@@ -839,5 +1117,339 @@ class CutterWorkOrderService
 
         $order->wip_cost = 0;
         $order->save();
+    }
+
+    /**
+     * W4-06: match each registered remnant with the cut block it came from:
+     * the block it names (stock_lot_id, one of the blocks this order cut),
+     * else the order's first block. A remnant must have a volume, its block
+     * a recorded size, and the remnants of one block must fit inside it.
+     *
+     * @param  list<array{length_m: float|int|string, width_m: float|int|string, height_m: float|int|string, stock_lot_id?: string|null}>  $remnants
+     * @param  Collection<int, FoamBlockConsumption>  $consumptions
+     * @return list<array{dimensions: array{length_m: float|int|string, width_m: float|int|string, height_m: float|int|string}, volume: float, parent: StockLot}>
+     */
+    private function resolveRemnants(CutterWorkOrder $order, array $remnants, Collection $consumptions, ?CutterWorkOrderBlock $firstBlock): array
+    {
+        if ($remnants === []) {
+            return [];
+        }
+
+        $byLot = $consumptions->filter(fn (FoamBlockConsumption $c) => $c->stockLot !== null)->keyBy('stock_lot_id');
+        $defaultLotId = $firstBlock !== null && $byLot->has($firstBlock->stock_lot_id)
+            ? $firstBlock->stock_lot_id
+            : $byLot->keys()->first();
+
+        $resolved = [];
+        $volumeByLot = [];
+        $countByLot = [];
+
+        foreach ($remnants as $remnant) {
+            $lotId = ($remnant['stock_lot_id'] ?? null) ?: $defaultLotId;
+            $consumption = $lotId !== null ? $byLot->get($lotId) : null;
+
+            if ($consumption === null) {
+                throw new SalesRuleException(
+                    $lotId === null
+                        ? "Order {$order->order_number} has no cut block to restock remnants of."
+                        : "Order {$order->order_number} did not cut the block a remnant names.",
+                    'CUT_REMNANT_NO_SOURCE_BLOCK',
+                    ['stock_lot_id' => $lotId],
+                );
+            }
+
+            $blockVolume = (float) $consumption->block_volume_m3;
+
+            if ($blockVolume <= 0) {
+                throw new SalesRuleException(
+                    "Block {$consumption->stockLot->lot_number} has no recorded size, so no remnant of it can be priced.",
+                    'BLOCK_DIMENSIONS_REQUIRED',
+                    ['stock_lot_id' => $lotId],
+                );
+            }
+
+            $volume = $this->remnantVolume($remnant);
+
+            if ($volume <= 0) {
+                throw new SalesRuleException(
+                    'A remnant must measure at least 0.0001 m³ to be restocked.',
+                    'CUT_REMNANT_TOO_SMALL',
+                    ['length_m' => $remnant['length_m'], 'width_m' => $remnant['width_m'], 'height_m' => $remnant['height_m']],
+                );
+            }
+
+            $volumeByLot[$lotId] = round(($volumeByLot[$lotId] ?? 0) + $volume, 6);
+            $countByLot[$lotId] = ($countByLot[$lotId] ?? 0) + 1;
+
+            if (self::VOLUME_ROUNDING_TOLERANCE * ($countByLot[$lotId] + 1) < $volumeByLot[$lotId] - $blockVolume) {
+                throw new SalesRuleException(
+                    "Remnants of {$volumeByLot[$lotId]} m³ cannot come out of block {$consumption->stockLot->lot_number} of {$blockVolume} m³.",
+                    'CUT_VOLUME_EXCEEDS_BLOCKS',
+                    ['stock_lot_id' => $lotId, 'block_volume_m3' => $blockVolume, 'remnant_volume_m3' => $volumeByLot[$lotId]],
+                );
+            }
+
+            $resolved[] = [
+                'dimensions' => $remnant,
+                'volume' => $volume,
+                'parent' => $consumption->stockLot,
+            ];
+        }
+
+        return $resolved;
+    }
+
+    /**
+     * W4-06: each usable remnant goes back into stock as a smaller block of
+     * the item of the block it came from, at its volume share of the block
+     * cost, in the order's output warehouse. It is numbered after that block
+     * (BLOCK-R1, -R2…) and keeps it as remnant_of_lot_id.
+     *
+     * @param  list<array{dimensions: array{length_m: float|int|string, width_m: float|int|string, height_m: float|int|string}, volume: float, parent: StockLot}>  $remnants
+     * @param  list<float>  $remnantCosts
+     * @return array<string, float> account code => value restocked
+     */
+    private function restockRemnants(CutterWorkOrder $order, array $remnants, array $remnantCosts, string $warehouseId): array
+    {
+        $byAccount = [];
+        $revisions = [];
+
+        foreach ($remnants as $index => $remnant) {
+            $parent = $remnant['parent'];
+            $dimensions = $remnant['dimensions'];
+            $revisions[$parent->id] = ($revisions[$parent->id]
+                ?? StockLot::withoutGlobalScopes()->withTrashed()->where('remnant_of_lot_id', $parent->id)->count()) + 1;
+            $cost = $remnantCosts[$index] ?? 0.0;
+
+            $lot = StockLot::create([
+                'inventory_item_id' => $parent->inventory_item_id,
+                'warehouse_id' => $warehouseId,
+                'bin_location' => ItemStockLevel::binFor($parent->inventory_item_id, $warehouseId),
+                'lot_number' => $parent->lot_number.'-R'.$revisions[$parent->id],
+                'remnant_of_lot_id' => $parent->id,
+                'pressure' => $parent->pressure,
+                'grade' => $parent->grade,
+                'production_batch_id' => $parent->production_batch_id,
+                'quantity' => 1,
+                'length_m' => (float) $dimensions['length_m'],
+                'width_m' => (float) $dimensions['width_m'],
+                'height_m' => (float) $dimensions['height_m'],
+                'unit_cost' => $cost,
+                'status' => 'available',
+            ]);
+
+            InventoryMovement::create([
+                'operating_unit_id' => $order->operating_unit_id,
+                'stock_lot_id' => $lot->id,
+                'to_warehouse_id' => $warehouseId,
+                'sku' => $parent->inventoryItem?->code ?? 'FOAM-BLOCK',
+                'movement_type' => 'production_output',
+                'quantity_delta' => 1,
+                'unit_cost' => $cost,
+                'reason' => 'cutter_remnant_restock',
+                'reference_document_type' => 'CutterWorkOrder',
+                'reference_id' => $order->id,
+            ]);
+
+            // INV-11: the remnant is a block again, in its item's account.
+            $account = InventoryAccounts::forLot($lot);
+            $byAccount[$account] = round(($byAccount[$account] ?? 0) + $cost, 4);
+        }
+
+        return $byAccount;
+    }
+
+    /**
+     * The order's weigh-ins that salvaged something, in the order they were
+     * weighed (the last absorbs the rounding of a weight share), with their
+     * fill lots whatever their warehouse or deletion.
+     *
+     * @return Collection<int, ByproductYield>
+     */
+    private function salvagedYields(CutterWorkOrder $order): Collection
+    {
+        return $order->byproductYields()
+            ->where('weight_kg', '>', 0)
+            ->with(['stockLot' => fn ($q) => $q->withoutGlobalScopes()->with('inventoryItem')])
+            ->orderBy('weighed_at')
+            ->orderBy('created_at')
+            ->orderBy('id')
+            ->get()
+            ->values();
+    }
+
+    /**
+     * Share a cost by weight; the last share absorbs the rounding.
+     *
+     * @param  list<float>  $weights
+     * @return list<float>
+     */
+    private function shareByWeight(array $weights, float $cost): array
+    {
+        $totalWeight = array_sum($weights);
+        $allocated = 0.0;
+        $shares = [];
+        $last = count($weights) - 1;
+
+        foreach ($weights as $index => $weight) {
+            $share = $index === $last
+                ? round($cost - $allocated, 4)
+                : ($totalWeight > 0 ? round($cost * $weight / $totalWeight, 4) : 0.0);
+            $allocated = round($allocated + $share, 4);
+            $shares[] = $share;
+        }
+
+        return $shares;
+    }
+
+    /**
+     * W4-06: the completion split is the byproduct's final price, shared by
+     * weight across the weigh-ins exactly as they shared it (the weigh-ins
+     * priced the fill with no remnant, so without remnants nothing changes).
+     * Decided before anything is written:
+     *
+     *   - a fill lot already at its final price keeps it;
+     *   - an untouched lot whose price changes is re-priced (an appended
+     *     revaluation movement; existing movements are never edited);
+     *   - a lot that moved since its weigh-in cannot be re-priced, since what
+     *     left it was costed at the weigh-in price. If the remnants are what
+     *     change its price the completion is refused (BYPRODUCT_ALREADY_MOVED;
+     *     completing without remnants keeps the price). Any other difference
+     *     (a lot weighed in before W4-06 priced the reserve-path fill at 0)
+     *     keeps the lot's price and the difference stays on the pieces;
+     *   - a positive weigh-in with no fill lot (only possible before W4-06)
+     *     stocks nothing, so its share stays on the pieces, as with a zero
+     *     weigh-in, rather than sitting in 1133 with no lot behind it.
+     *
+     * @param  Collection<int, ByproductYield>  $salvaged
+     * @return array{entries: list<array{yield: ByproductYield, value: float, reprice: float|null}>, to_pieces: float}
+     */
+    private function resolveByproduct(CutterWorkOrder $order, Collection $salvaged, float $byproductCost, float $baseByproductCost, bool $hasRemnants): array
+    {
+        $weights = $salvaged->map(fn (ByproductYield $y) => (float) $y->weight_kg)->all();
+        $finalShares = $this->shareByWeight($weights, $byproductCost);
+        $baseShares = $this->shareByWeight($weights, $baseByproductCost);
+
+        $entries = [];
+        $toPieces = 0.0;
+
+        foreach ($salvaged as $index => $yield) {
+            $weight = (float) $yield->weight_kg;
+            $share = $finalShares[$index];
+            $lot = $yield->stockLot;
+
+            if ($lot === null) {
+                $entries[] = ['yield' => $yield, 'value' => 0.0, 'reprice' => null];
+                $toPieces = round($toPieces + $share, 4);
+
+                continue;
+            }
+
+            $unitCost = round($share / $weight, 4);
+            $lotUnitCost = round((float) $lot->unit_cost, 4);
+
+            if ($unitCost === $lotUnitCost) {
+                $entries[] = ['yield' => $yield, 'value' => $share, 'reprice' => null];
+
+                continue;
+            }
+
+            if (! $this->byproductLotMoved($lot, $weight)) {
+                $entries[] = ['yield' => $yield, 'value' => $share, 'reprice' => $unitCost];
+
+                continue;
+            }
+
+            if ($hasRemnants && round($baseShares[$index] / $weight, 4) === $lotUnitCost) {
+                throw new SalesRuleException(
+                    "Byproduct lot {$lot->lot_number} has moved since its weigh-in, so the remnants registered now cannot lower its price; complete the order without remnants, or bring the lot back to its weighed quantity first.",
+                    'BYPRODUCT_ALREADY_MOVED',
+                    ['stock_lot_id' => $lot->id],
+                );
+            }
+
+            $kept = round($lotUnitCost * $weight, 4);
+            $entries[] = ['yield' => $yield, 'value' => $kept, 'reprice' => null];
+            $toPieces = round($toPieces + $share - $kept, 4);
+        }
+
+        return ['entries' => $entries, 'to_pieces' => $toPieces];
+    }
+
+    /**
+     * A fill lot has moved when it no longer holds its weigh-in, is not
+     * available, was split or transferred, or has any movement besides its
+     * byproduct yield and this module's revaluations of it.
+     */
+    private function byproductLotMoved(StockLot $lot, float $weightKg): bool
+    {
+        return $lot->trashed()
+            || $lot->status !== 'available'
+            || abs((float) $lot->quantity - $weightKg) > 0.00005
+            || InventoryMovement::where('stock_lot_id', $lot->id)
+                ->where('movement_type', '!=', 'byproduct_yield')
+                ->where(fn ($q) => $q->where('movement_type', '!=', 'adjustment')
+                    ->orWhereNull('reason')
+                    ->orWhere('reason', '!=', self::BYPRODUCT_REPRICE_REASON))
+                ->exists()
+            || StockLot::withoutGlobalScopes()->withTrashed()->where('source_stock_lot_id', $lot->id)->exists();
+    }
+
+    /**
+     * Re-price an untouched fill lot. Movements are append-only, so the change
+     * is recorded as a zero-quantity revaluation movement carrying the new
+     * unit cost; the lot's byproduct-yield movement keeps its weigh-in price.
+     */
+    private function repriceFillLot(CutterWorkOrder $order, StockLot $lot, float $unitCost): void
+    {
+        $lot->unit_cost = $unitCost;
+        $lot->save();
+
+        InventoryMovement::create([
+            'operating_unit_id' => $order->operating_unit_id,
+            'stock_lot_id' => $lot->id,
+            'to_warehouse_id' => $lot->warehouse_id,
+            'sku' => $lot->inventoryItem?->code ?? 'BYPRODUCT-FILL',
+            'movement_type' => 'adjustment',
+            'quantity_delta' => 0,
+            'unit_cost' => $unitCost,
+            'reason' => self::BYPRODUCT_REPRICE_REASON,
+            'reference_document_type' => 'CutterWorkOrder',
+            'reference_id' => $order->id,
+        ]);
+    }
+
+    /**
+     * Book each weigh-in's final value on its yield (and re-price its fill
+     * lot where resolveByproduct() decided so).
+     *
+     * @param  list<array{yield: ByproductYield, value: float, reprice: float|null}>  $entries
+     * @return array<string, float> account code => byproduct value
+     */
+    private function priceByproduct(CutterWorkOrder $order, array $entries): array
+    {
+        $byAccount = [];
+
+        foreach ($entries as $entry) {
+            $yield = $entry['yield'];
+            $yield->yield_cost = $entry['value'];
+            $yield->save();
+
+            $lot = $yield->stockLot;
+
+            if ($lot === null) {
+                continue;
+            }
+
+            if ($entry['reprice'] !== null) {
+                $this->repriceFillLot($order, $lot, $entry['reprice']);
+            }
+
+            // INV-11: the fill lot's own account.
+            $account = InventoryAccounts::forLot($lot);
+            $byAccount[$account] = round(($byAccount[$account] ?? 0) + $entry['value'], 4);
+        }
+
+        return $byAccount;
     }
 }
