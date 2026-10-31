@@ -30,6 +30,7 @@ class EmployeeFactory extends Factory
             'pay_type' => $payType,
             'monthly_salary' => $payType === PayType::Monthly ? fake()->randomFloat(4, 800, 5000) : null,
             'hourly_rate' => $payType === PayType::Hourly ? fake()->randomFloat(4, 6, 25) : null,
+            'daily_rate' => $payType === PayType::Daily ? fake()->randomFloat(4, 50, 200) : null,
             'hire_date' => fake()->dateTimeBetween('-5 years', '-30 days')->format('Y-m-d'),
             'status' => EmployeeStatus::Active,
         ];

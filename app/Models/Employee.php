@@ -36,6 +36,8 @@ final class Employee extends Model
         'pay_type',
         'monthly_salary',
         'hourly_rate',
+        'daily_rate',
+        'work_shift_id',
         'hire_date',
         'contract_start',
         'contract_end',
@@ -54,6 +56,7 @@ final class Employee extends Model
             'status' => EmployeeStatus::class,
             'monthly_salary' => 'decimal:4',
             'hourly_rate' => 'decimal:4',
+            'daily_rate' => 'decimal:4',
             'hire_date' => 'date',
             'contract_start' => 'date',
             'contract_end' => 'date',
@@ -71,6 +74,17 @@ final class Employee extends Model
     public function operatingUnit(): BelongsTo
     {
         return $this->belongsTo(OperatingUnit::class);
+    }
+
+    /**
+     * W5-04 (HR-14): the shift giving the overtime multiplier and, for daily
+     * pay, the standard hours. A deleted shift still applies to anyone left
+     * holding it (a trashed employee, or an assignment racing the delete), so
+     * payroll never falls back silently to the company defaults.
+     */
+    public function workShift(): BelongsTo
+    {
+        return $this->belongsTo(WorkShift::class)->withTrashed();
     }
 
     public function attendances(): HasMany

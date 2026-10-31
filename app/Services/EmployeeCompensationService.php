@@ -16,7 +16,7 @@ use InvalidArgumentException;
 
 /**
  * HR-11: an employee's pay terms (pay type, monthly salary, personal hourly
- * rate) are versioned by effective date. A change appends a version instead
+ * rate, daily rate since W5-04) are versioned by effective date. A change appends a version instead
  * of overwriting the employee row, and payroll resolves the terms per day.
  * The employee row keeps a copy of the terms in force today: it is synced
  * when a change is recorded and daily by `hr:sync-pay-terms`, so a
@@ -36,6 +36,7 @@ final class EmployeeCompensationService
             'pay_type' => $employee->pay_type,
             'monthly_salary' => $employee->monthly_salary,
             'hourly_rate' => $employee->hourly_rate,
+            'daily_rate' => $employee->daily_rate,
             'effective_from' => $employee->hire_date->toDateString(),
             'reason' => EmployeeCompensation::OPENING_REASON,
             'created_by' => $userId,
@@ -49,7 +50,7 @@ final class EmployeeCompensationService
      * A calculated run the change reaches is flagged for recalculation, so it
      * cannot be submitted on the old terms.
      *
-     * @param  array{pay_type: string, monthly_salary?: float|int|string|null, hourly_rate?: float|int|string|null, effective_from: string, reason?: string|null}  $data
+     * @param  array{pay_type: string, monthly_salary?: float|int|string|null, hourly_rate?: float|int|string|null, daily_rate?: float|int|string|null, effective_from: string, reason?: string|null}  $data
      */
     public function record(Employee $employee, array $data, ?string $userId = null): EmployeeCompensation
     {
@@ -104,6 +105,7 @@ final class EmployeeCompensationService
                 'pay_type' => $data['pay_type'],
                 'monthly_salary' => $data['monthly_salary'] ?? null,
                 'hourly_rate' => $data['hourly_rate'] ?? null,
+                'daily_rate' => $data['daily_rate'] ?? null,
                 'effective_from' => $effectiveFrom,
                 'reason' => $data['reason'] ?? null,
                 'created_by' => $userId,
@@ -221,7 +223,7 @@ final class EmployeeCompensationService
      * the end of the period. An employee with no history (created outside the
      * API before HR-11) is paid on the terms on the employee row.
      *
-     * @return list<array{from: Carbon, to: Carbon, pay_type: PayType|null, monthly_salary: float|null, hourly_rate: float|null}>
+     * @return list<array{from: Carbon, to: Carbon, pay_type: PayType|null, monthly_salary: float|null, hourly_rate: float|null, daily_rate: float|null}>
      */
     public function segments(Employee $employee, Carbon $start, Carbon $end): array
     {
@@ -241,6 +243,7 @@ final class EmployeeCompensationService
                 'pay_type' => $employee->pay_type,
                 'monthly_salary' => $employee->monthly_salary !== null ? (float) $employee->monthly_salary : null,
                 'hourly_rate' => $employee->hourly_rate !== null ? (float) $employee->hourly_rate : null,
+                'daily_rate' => $employee->daily_rate !== null ? (float) $employee->daily_rate : null,
             ]];
         }
 
@@ -264,6 +267,7 @@ final class EmployeeCompensationService
                 'pay_type' => $version->pay_type,
                 'monthly_salary' => $version->monthly_salary !== null ? (float) $version->monthly_salary : null,
                 'hourly_rate' => $version->hourly_rate !== null ? (float) $version->hourly_rate : null,
+                'daily_rate' => $version->daily_rate !== null ? (float) $version->daily_rate : null,
             ];
         }
 
@@ -360,9 +364,10 @@ final class EmployeeCompensationService
             'pay_type' => $current->pay_type,
             'monthly_salary' => $current->monthly_salary,
             'hourly_rate' => $current->hourly_rate,
+            'daily_rate' => $current->daily_rate,
         ]);
 
-        if (! $employee->isDirty(['pay_type', 'monthly_salary', 'hourly_rate'])) {
+        if (! $employee->isDirty(['pay_type', 'monthly_salary', 'hourly_rate', 'daily_rate'])) {
             return false;
         }
 

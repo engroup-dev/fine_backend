@@ -48,6 +48,7 @@ use App\Models\User;
 use App\Models\Warehouse;
 use App\Models\WarehouseTransfer;
 use App\Models\WarehouseTransferLine;
+use App\Models\WorkShift;
 use App\Observers\AuditObserver;
 use App\Support\CurrentUnitContext;
 use Illuminate\Support\ServiceProvider;
@@ -133,6 +134,7 @@ class AppServiceProvider extends ServiceProvider
         AdvanceInstallment::observe(AuditObserver::class);
         EmployeePayItem::observe(AuditObserver::class);
         EmployeeAdjustment::observe(AuditObserver::class);
+        WorkShift::observe(AuditObserver::class);
         Client::observe(AuditObserver::class);
         Entity::observe(AuditObserver::class);
         SalesOrder::observe(AuditObserver::class);

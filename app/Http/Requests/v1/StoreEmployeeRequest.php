@@ -39,6 +39,9 @@ final class StoreEmployeeRequest extends FormRequest
                 'numeric',
                 'min:0',
             ],
+            // W5-04 (HR-14): daily pay needs its daily rate.
+            'daily_rate' => ['nullable', 'required_if:pay_type,'.PayType::Daily->value, 'numeric', 'min:0'],
+            'work_shift_id' => ['nullable', 'uuid', Rule::exists('work_shifts', 'id')->whereNull('deleted_at')],
             'hire_date' => ['required', 'date'],
             'contract_start' => ['nullable', 'date'],
             'contract_end' => ['nullable', 'date'],
@@ -56,7 +59,7 @@ final class StoreEmployeeRequest extends FormRequest
     public function messages(): array
     {
         return [
-            'pay_type.enum' => 'The pay type must be monthly or hourly; piece-rate pay is not supported.',
+            'pay_type.enum' => 'The pay type must be monthly, hourly or daily; piece-rate pay is not supported.',
             'hourly_rate.required' => 'An hourly employee without a labor role needs a personal hourly rate.',
         ];
     }

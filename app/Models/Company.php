@@ -23,6 +23,8 @@ final class Company extends Model
         'annual_leave_days',
         'advance_max_salary_multiple',
         'advance_max_deduction_pct',
+        'monthly_standard_hours',
+        'overtime_multiplier',
     ];
 
     protected $casts = [
@@ -31,6 +33,8 @@ final class Company extends Model
         'annual_leave_days' => 'integer',
         'advance_max_salary_multiple' => 'decimal:2',
         'advance_max_deduction_pct' => 'decimal:2',
+        'monthly_standard_hours' => 'decimal:2',
+        'overtime_multiplier' => 'decimal:2',
     ];
 
     public function operatingUnits(): HasMany

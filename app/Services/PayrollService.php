@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Services;
 
+use App\Enums\AttendanceStatus;
 use App\Enums\DeductionAccountRole;
 use App\Enums\EmployeeAdjustmentStatus;
 use App\Enums\PayrollRunStatus;
@@ -42,6 +43,17 @@ final class PayrollService
      * type and the DED-ADV lookup); upper-cased for comparison.
      */
     private const ADVANCE_LINE_TYPES = ['ADVANCE', 'DED-ADV'];
+
+    /**
+     * HR-14: the standard day of a daily-paid employee without a shift, the
+     * hours a present day records by default (AttendanceController::store).
+     */
+    public const DEFAULT_STANDARD_DAY_HOURS = 8.0;
+
+    /** HR-14: company defaults when the settings are unset. */
+    public const DEFAULT_MONTHLY_STANDARD_HOURS = 208.0;
+
+    public const DEFAULT_OVERTIME_MULTIPLIER = 1.5;
 
     public function __construct(
         private readonly AccountingService $accountingService,
@@ -83,7 +95,7 @@ final class PayrollService
      * HR-13: standing pay items and approved one-off adjustments are added:
      * gross = base + attendance + additions, and their deductions become
      * locked lines. Percentages apply to base + attendance pay. An employee
-     * who earned nothing in the period (base + attendance = 0) gets no payslip
+     * who earned nothing in the period (base + attendance + HR-14 overtime = 0) gets no payslip
      * and no allowances. Deductions above gross are refused
      * (PAYROLL_DEDUCTIONS_EXCEED_GROSS, listing every such employee), never
      * cut silently. An approved one-off adjustment of the period for an
@@ -93,6 +105,12 @@ final class PayrollService
      * HR-12: due advance installments become locked deduction lines, capped
      * by the company's deduction percentage of net pay after the HR-13
      * deductions (they count like manual deductions).
+     *
+     * HR-14: overtime is its own figure inside gross:
+     * gross = base + attendance + overtime + additions. Daily terms pay each
+     * present day (half a day for a half day) at the daily rate as attendance
+     * pay. HR-13 percentages stay on base + attendance pay; an employee whose
+     * only pay in the period is overtime still gets a payslip.
      */
     public function calculate(PayrollRun $run): PayrollRun
     {
@@ -107,8 +125,13 @@ final class PayrollService
             $end = $start->copy()->endOfMonth();
 
             $employees = Employee::withoutGlobalScopes()
+                ->with('workShift')
                 ->where('status', '!=', 'terminated')
                 ->get();
+
+            $company = Company::query()->find($run->company_id);
+            $monthlyStandardHours = (float) ($company?->monthly_standard_hours ?? self::DEFAULT_MONTHLY_STANDARD_HOURS);
+            $defaultMultiplier = (float) ($company?->overtime_multiplier ?? self::DEFAULT_OVERTIME_MULTIPLIER);
 
             $totalGross = 0.0;
             $totalDeductions = 0.0;
@@ -120,18 +143,20 @@ final class PayrollService
                 $segments = $this->compensations->segments($employee, $start, $end);
 
                 $basePay = $this->monthlyBasePay($employee, $segments, $start, $end);
-                $attendancePay = $this->attendancePay($employee, $segments, $start, $end);
+                $timePay = $this->attendancePay($employee, $segments, $start, $end, $monthlyStandardHours, $defaultMultiplier);
+                $attendancePay = $timePay['attendance_pay'];
+                $overtimePay = $timePay['overtime_pay'];
 
                 $earned = round($basePay + $attendancePay, 4);
 
-                if ($earned <= 0.0) {
+                if (round($earned + $overtimePay, 4) <= 0.0) {
                     continue;
                 }
 
                 // HR-13: standing items and the period's approved adjustments.
                 $lines = $this->payItems->linesFor($employee, $run->period, $earned);
                 $additionsPay = round(array_sum(array_column($lines['additions'], 'amount')), 4);
-                $gross = round($earned + $additionsPay, 4);
+                $gross = round($earned + $overtimePay + $additionsPay, 4);
                 $itemDeductions = round(array_sum(array_column($lines['deductions'], 'amount')), 4);
 
                 if ($itemDeductions - $gross > 0.00001) {
@@ -154,6 +179,7 @@ final class PayrollService
                     'operating_unit_id' => $employee->operating_unit_id,
                     'base_pay' => $basePay,
                     'attendance_pay' => $attendancePay,
+                    'overtime_pay' => $overtimePay,
                     'labor_log_pay' => 0,
                     'additions' => $lines['additions'],
                     'additions_pay' => $additionsPay,
@@ -191,6 +217,36 @@ final class PayrollService
     }
 
     /**
+     * HR-14: an overtime input changed (a shift's multiplier or standard
+     * hours, an employee's shift, the company's monthly standard hours or
+     * default multiplier). Every calculated run holding a payslip with
+     * overtime pay (for one of $employeeIds when given) was worked out on the
+     * old figures and cannot be submitted until recalculated. A payslip
+     * without overtime pay does not depend on these inputs.
+     *
+     * @param  list<string>|null  $employeeIds
+     */
+    public function flagRunsWithOvertime(?array $employeeIds = null): void
+    {
+        if ($employeeIds === []) {
+            return;
+        }
+
+        PayrollRun::query()
+            ->where('status', PayrollRunStatus::Calculated)
+            ->where('needs_recalculation', false)
+            ->whereHas('payslips', function ($query) use ($employeeIds): void {
+                $query->withoutGlobalScopes()->where('overtime_pay', '>', 0);
+
+                if ($employeeIds !== null) {
+                    $query->whereIn('employee_id', $employeeIds);
+                }
+            })
+            ->get()
+            ->each(fn (PayrollRun $run) => $run->update(['needs_recalculation' => true]));
+    }
+
+    /**
      * BR-PAY-004: a salaried employee hired inside the period is paid only for
      * the calendar days they were employed (the hire day counts as worked);
      * one hired after the period has not earned anything yet.
@@ -199,7 +255,7 @@ final class PayrollService
      * (days / days in month), so a mid-month raise pays the old salary up to
      * the day before and the new one from its effective date.
      *
-     * @param  list<array{from: Carbon, to: Carbon, pay_type: PayType|null, monthly_salary: float|null, hourly_rate: float|null}>  $segments
+     * @param  list<array{from: Carbon, to: Carbon, pay_type: PayType|null, monthly_salary: float|null, hourly_rate: float|null, daily_rate: float|null}>  $segments
      */
     private function monthlyBasePay(Employee $employee, array $segments, Carbon $start, Carbon $end): float
     {
@@ -443,32 +499,54 @@ final class PayrollService
      * terms are paid by the hour. An hourly employee with payable hours but no
      * resolvable rate is a refusal, not a silent zero.
      *
-     * @param  list<array{from: Carbon, to: Carbon, pay_type: PayType|null, monthly_salary: float|null, hourly_rate: float|null}>  $segments
+     * HR-14: overtime hours of a day at work (present or half day) are paid
+     * by the terms in force that day, × the multiplier of the employee's shift
+     * (the company default without one):
+     * - hourly: overtime × the hourly rate × multiplier
+     * - daily: a present day pays the daily rate, a half day half of it, as
+     *   attendance pay; overtime × daily rate / the shift's standard hours
+     *   (8 without a shift) × multiplier. Daily terms without a daily rate on
+     *   a paid day are a refusal.
+     * - monthly: overtime × salary / the company's monthly standard hours
+     *   × multiplier
+     *
+     * @param  list<array{from: Carbon, to: Carbon, pay_type: PayType|null, monthly_salary: float|null, hourly_rate: float|null, daily_rate: float|null}>  $segments
+     * @return array{attendance_pay: float, overtime_pay: float}
      */
-    private function attendancePay(Employee $employee, array $segments, Carbon $start, Carbon $end): float
+    private function attendancePay(Employee $employee, array $segments, Carbon $start, Carbon $end, float $monthlyStandardHours, float $defaultMultiplier): array
     {
-        $hourlySegments = array_values(array_filter(
+        $paidSegments = array_values(array_filter(
             $segments,
-            fn (array $segment) => $segment['pay_type'] === PayType::Hourly,
+            fn (array $segment) => in_array($segment['pay_type'], [PayType::Hourly, PayType::Daily, PayType::Monthly], true),
         ));
 
-        if ($hourlySegments === []) {
-            return 0.0;
+        if ($paidSegments === []) {
+            return ['attendance_pay' => 0.0, 'overtime_pay' => 0.0];
         }
 
         $attendances = Attendance::withoutGlobalScopes()
             ->where('employee_id', $employee->id)
             ->whereDate('work_date', '>=', $start->toDateString())
             ->whereDate('work_date', '<=', $end->toDateString())
+            ->orderBy('work_date')
             ->get()
-            ->filter(fn (Attendance $a) => $a->status->isPayable() && (float) $a->hours_worked > 0);
+            ->filter(fn (Attendance $a) => $a->status->isPayable());
+
+        $shift = $employee->workShift;
+        $multiplier = $shift !== null ? (float) $shift->overtime_multiplier : $defaultMultiplier;
+        $standardDayHours = $shift !== null && (float) $shift->standard_hours > 0
+            ? (float) $shift->standard_hours
+            : self::DEFAULT_STANDARD_DAY_HOURS;
 
         $pay = 0.0;
+        $overtimePay = 0.0;
 
         foreach ($attendances as $attendance) {
             $workDate = $attendance->work_date->copy()->startOfDay();
+            $hours = (float) $attendance->hours_worked;
+            $overtime = (float) $attendance->overtime_hours;
 
-            $segment = collect($hourlySegments)->first(
+            $segment = collect($paidSegments)->first(
                 fn (array $segment) => $workDate->betweenIncluded($segment['from'], $segment['to'])
             );
 
@@ -476,29 +554,61 @@ final class PayrollService
                 continue;
             }
 
-            $rate = $employee->labor_role !== null
-                ? LaborRoleRate::rateFor($employee->labor_role, $attendance->work_date)
-                : null;
+            if ($segment['pay_type'] === PayType::Hourly) {
+                if ($hours <= 0 && $overtime <= 0) {
+                    continue;
+                }
 
-            $rate ??= $segment['hourly_rate'];
+                $rate = $employee->labor_role !== null
+                    ? LaborRoleRate::rateFor($employee->labor_role, $attendance->work_date)
+                    : null;
 
-            if ($rate === null) {
-                throw new InvalidArgumentException(
-                    "Employee {$employee->id} has payable hours but no labor role rate and no personal rate."
-                );
+                $rate ??= $segment['hourly_rate'];
+
+                if ($rate === null) {
+                    throw new InvalidArgumentException(
+                        "Employee {$employee->id} has payable hours but no labor role rate and no personal rate."
+                    );
+                }
+
+                $pay = round($pay + ($hours * $rate), 4);
+                $overtimePay = round($overtimePay + ($overtime * $rate * $multiplier), 4);
+
+                continue;
             }
 
-            $pay = round($pay + ((float) $attendance->hours_worked * $rate), 4);
+            if ($segment['pay_type'] === PayType::Daily) {
+                $dailyRate = $segment['daily_rate'];
+
+                if ($dailyRate === null) {
+                    throw new InvalidArgumentException(
+                        "Employee {$employee->id} is on daily pay with paid days but no daily rate."
+                    );
+                }
+
+                $dayFraction = $attendance->status === AttendanceStatus::HalfDay ? 0.5 : 1.0;
+
+                $pay = round($pay + ($dailyRate * $dayFraction), 4);
+                $overtimePay = round($overtimePay + ($overtime * $dailyRate / $standardDayHours * $multiplier), 4);
+
+                continue;
+            }
+
+            // Monthly: the salary is base pay; only overtime is paid by the hour.
+            if ($overtime > 0 && $monthlyStandardHours > 0) {
+                $salary = (float) ($segment['monthly_salary'] ?? 0);
+                $overtimePay = round($overtimePay + ($overtime * $salary / $monthlyStandardHours * $multiplier), 4);
+            }
         }
 
-        return $pay;
+        return ['attendance_pay' => $pay, 'overtime_pay' => $overtimePay];
     }
 
     /**
      * HR-08 / phase-08 §8.4 PayrollRun.Posted, per unit:
      *
      * 1. ACCRUAL (dated min(end of period, today)):
-     *   DR 57      Wage Expense               (base + attendance pay)
+     *   DR 57      Wage Expense               (base + attendance + HR-14 overtime pay)
      *   DR 57      Wage Expense               (HR-13 additions: allowances, bonuses)
      *   CR 226     Wages Payable              (net pay payable)
      *   CR 225     Payroll deductions payable (withheld: `liability` deductions and untyped manual lines)

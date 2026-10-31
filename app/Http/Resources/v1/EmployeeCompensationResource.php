@@ -17,6 +17,7 @@ final class EmployeeCompensationResource extends JsonResource
             'pay_type' => $this->pay_type->value ?? $this->pay_type,
             'monthly_salary' => $this->monthly_salary !== null ? (float) $this->monthly_salary : null,
             'hourly_rate' => $this->hourly_rate !== null ? (float) $this->hourly_rate : null,
+            'daily_rate' => $this->daily_rate !== null ? (float) $this->daily_rate : null,
             'effective_from' => $this->effective_from?->format('Y-m-d'),
             'reason' => $this->reason,
             'created_by' => $this->created_by,

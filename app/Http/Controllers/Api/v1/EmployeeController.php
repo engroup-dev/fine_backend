@@ -17,8 +17,10 @@ use App\Models\Employee;
 use App\Models\EmployeeAdvance;
 use App\Models\Entity;
 use App\Models\Scopes\OperatingUnitScope;
+use App\Models\WorkShift;
 use App\Services\EmployeeCompensationService;
 use App\Services\EntityService;
+use App\Services\PayrollService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
@@ -35,7 +37,7 @@ final class EmployeeController extends Controller
      */
     public function index(Request $request): AnonymousResourceCollection
     {
-        $query = Employee::with(['entity', 'operatingUnit', 'compensations']);
+        $query = Employee::with(['entity', 'operatingUnit', 'compensations', 'workShift']);
 
         // Unit drill-down is only honoured for company-wide roles; a unit
         // caller's listing stays inside their ambient unit scope. Lifting only
@@ -67,6 +69,12 @@ final class EmployeeController extends Controller
             return $this->bankDetailsForbidden();
         }
 
+        // HR-14: the shift sets the employee's overtime multiplier, so only the
+        // pay roles (HR-10) assign one, as only they write shifts.
+        if ($request->filled('work_shift_id') && ! EmployeeResource::holdsPayRole($request->user())) {
+            return $this->workShiftForbidden();
+        }
+
         $this->assertContractDates($request->only('hire_date', 'contract_start', 'contract_end', 'probation_end', 'termination_date'));
 
         $employee = DB::transaction(function () use ($request, $entityService, $compensations) {
@@ -96,6 +104,10 @@ final class EmployeeController extends Controller
                 $entityService->ensureEntityRole($entity, EntityRoleType::Employee, $request->operating_unit_id);
             }
 
+            if ($request->filled('work_shift_id')) {
+                $this->lockAssignableShift((string) $request->work_shift_id);
+            }
+
             $employee = Employee::create([
                 'entity_id' => $entityId,
                 'employee_number' => $request->employee_number,
@@ -105,6 +117,8 @@ final class EmployeeController extends Controller
                 'pay_type' => $request->pay_type,
                 'monthly_salary' => $request->monthly_salary,
                 'hourly_rate' => $request->hourly_rate,
+                'daily_rate' => $request->daily_rate,
+                'work_shift_id' => $request->work_shift_id,
                 'hire_date' => $request->hire_date,
                 'contract_start' => $request->contract_start,
                 'contract_end' => $request->contract_end,
@@ -118,7 +132,7 @@ final class EmployeeController extends Controller
             // HR-11: the hiring terms open the pay history.
             $compensations->recordOpening($employee, $request->user()?->id);
 
-            return $employee->load(['entity', 'operatingUnit', 'compensations']);
+            return $employee->load(['entity', 'operatingUnit', 'compensations', 'workShift']);
         });
 
         return (new EmployeeResource($employee))
@@ -131,7 +145,7 @@ final class EmployeeController extends Controller
      */
     public function show(string $id): EmployeeResource
     {
-        $employee = Employee::with(['entity', 'operatingUnit', 'compensations'])->findOrFail($id);
+        $employee = Employee::with(['entity', 'operatingUnit', 'compensations', 'workShift'])->findOrFail($id);
 
         return new EmployeeResource($employee);
     }
@@ -162,7 +176,7 @@ final class EmployeeController extends Controller
      * Edits the employee card. Pay terms are not edited here: HR-11 keeps them
      * as dated history, changed through POST /employees/{id}/compensations.
      */
-    public function update(Request $request, string $id, EmployeeCompensationService $compensations): EmployeeResource|JsonResponse
+    public function update(Request $request, string $id, EmployeeCompensationService $compensations, PayrollService $payroll): EmployeeResource|JsonResponse
     {
         $employee = Employee::findOrFail($id);
 
@@ -176,6 +190,14 @@ final class EmployeeController extends Controller
             }
         }
 
+        // HR-14: the shift sets overtime pay; only the pay roles move an
+        // employee to another shift. Sending back the stored value is not a change.
+        if ($request->exists('work_shift_id')
+            && (string) $request->input('work_shift_id') !== (string) $employee->work_shift_id
+            && ! EmployeeResource::holdsPayRole($request->user())) {
+            return $this->workShiftForbidden();
+        }
+
         $payTermsMessage = 'Pay type and pay rates change through a dated pay change (POST /employees/{id}/compensations), not by editing the employee.';
 
         $request->validate([
@@ -186,6 +208,16 @@ final class EmployeeController extends Controller
             'pay_type' => 'prohibited',
             'monthly_salary' => 'prohibited',
             'hourly_rate' => 'prohibited',
+            'daily_rate' => 'prohibited',
+            // The stored shift may be sent back even if it was deleted since
+            // (an employee restored after the delete): that is not a change.
+            'work_shift_id' => ['sometimes', 'nullable', 'uuid', Rule::exists('work_shifts', 'id')->where(function ($query) use ($employee): void {
+                $query->whereNull('deleted_at');
+
+                if ($employee->work_shift_id !== null) {
+                    $query->orWhere('id', $employee->work_shift_id);
+                }
+            })],
             'hire_date' => 'sometimes|required|date',
             'contract_start' => 'sometimes|nullable|date',
             'contract_end' => 'sometimes|nullable|date',
@@ -199,6 +231,7 @@ final class EmployeeController extends Controller
             'pay_type.prohibited' => $payTermsMessage,
             'monthly_salary.prohibited' => $payTermsMessage,
             'hourly_rate.prohibited' => $payTermsMessage,
+            'daily_rate.prohibited' => $payTermsMessage,
         ]);
 
         $this->assertContractDates([
@@ -212,7 +245,7 @@ final class EmployeeController extends Controller
         $previousHireDate = $employee->hire_date->toDateString();
 
         try {
-            DB::transaction(function () use ($request, $employee, $compensations, $previousHireDate) {
+            DB::transaction(function () use ($request, $employee, $compensations, $payroll, $previousHireDate) {
                 // W5-02 (HR-12): an advance lives in the employee's unit (its 1215
                 // payout, payroll recovery and repayments must match it), so the
                 // unit cannot change while one is open. The employee row is locked
@@ -237,11 +270,16 @@ final class EmployeeController extends Controller
                     }
                 }
 
+                if ($request->filled('work_shift_id') && (string) $request->input('work_shift_id') !== (string) $current->work_shift_id) {
+                    $this->lockAssignableShift((string) $request->input('work_shift_id'));
+                }
+
                 $employee->update($request->only(
                     'operating_unit_id',
                     'employee_number',
                     'job_title',
                     'labor_role',
+                    'work_shift_id',
                     'hire_date',
                     'contract_start',
                     'contract_end',
@@ -253,6 +291,11 @@ final class EmployeeController extends Controller
                     'record_version'
                 ));
 
+                // HR-14: a calculated run paid this employee's overtime on the old shift.
+                if ($employee->wasChanged('work_shift_id')) {
+                    $payroll->flagRunsWithOvertime([$employee->id]);
+                }
+
                 // HR-11: the pay history starts at the hire date.
                 $compensations->moveOpening($employee, $previousHireDate);
             });
@@ -260,7 +303,7 @@ final class EmployeeController extends Controller
             return response()->json(['message' => $e->getMessage(), 'code' => 'INVALID_COMPENSATION'], 422);
         }
 
-        return new EmployeeResource($employee->load(['entity', 'operatingUnit', 'compensations']));
+        return new EmployeeResource($employee->load(['entity', 'operatingUnit', 'compensations', 'workShift']));
     }
 
     /**
@@ -301,10 +344,12 @@ final class EmployeeController extends Controller
                 'numeric',
                 'min:0',
             ],
+            // W5-04 (HR-14): daily pay needs its daily rate.
+            'daily_rate' => ['nullable', 'required_if:pay_type,'.PayType::Daily->value, 'numeric', 'min:0'],
             'effective_from' => ['required', 'date'],
             'reason' => ['nullable', 'string', 'max:255'],
         ], [
-            'pay_type.enum' => 'The pay type must be monthly or hourly; piece-rate pay is not supported.',
+            'pay_type.enum' => 'The pay type must be monthly, hourly or daily; piece-rate pay is not supported.',
             'hourly_rate.required' => 'An hourly employee without a labor role needs a personal hourly rate.',
         ]);
 
@@ -358,6 +403,29 @@ final class EmployeeController extends Controller
         return response()->json([
             'message' => 'Only HR, accounting or the owner can change pay.',
             'code' => 'COMPENSATION_FORBIDDEN',
+        ], 403);
+    }
+
+    /**
+     * HR-14: locks the shift being assigned, as WorkShiftController::destroy()
+     * does before its in-use check, so a delete running at the same time cannot
+     * commit between validation and the assignment. A shift deleted meanwhile
+     * is refused.
+     */
+    private function lockAssignableShift(string $shiftId): void
+    {
+        if (WorkShift::query()->lockForUpdate()->find($shiftId) === null) {
+            throw ValidationException::withMessages([
+                'work_shift_id' => 'The selected work shift has been deleted.',
+            ]);
+        }
+    }
+
+    private function workShiftForbidden(): JsonResponse
+    {
+        return response()->json([
+            'message' => 'Only HR, accounting or the owner can assign a work shift.',
+            'code' => 'WORK_SHIFT_FORBIDDEN',
         ], 403);
     }
 

@@ -31,6 +31,7 @@ final class EmployeeCompensation extends Model
         'pay_type',
         'monthly_salary',
         'hourly_rate',
+        'daily_rate',
         'effective_from',
         'reason',
         'created_by',
@@ -42,6 +43,7 @@ final class EmployeeCompensation extends Model
             'pay_type' => PayType::class,
             'monthly_salary' => 'decimal:4',
             'hourly_rate' => 'decimal:4',
+            'daily_rate' => 'decimal:4',
             'effective_from' => 'date',
         ];
     }

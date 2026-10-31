@@ -21,6 +21,7 @@ final class Attendance extends Model
         'work_date',
         'status',
         'hours_worked',
+        'overtime_hours',
         'notes',
     ];
 
@@ -28,6 +29,7 @@ final class Attendance extends Model
         'status' => AttendanceStatus::class,
         'work_date' => 'date',
         'hours_worked' => 'decimal:2',
+        'overtime_hours' => 'decimal:2',
     ];
 
     public function employee(): BelongsTo

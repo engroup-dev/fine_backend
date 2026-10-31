@@ -22,6 +22,7 @@ final class Payslip extends Model
         'operating_unit_id',
         'base_pay',
         'attendance_pay',
+        'overtime_pay',
         'labor_log_pay',
         'additions',
         'additions_pay',
@@ -34,6 +35,7 @@ final class Payslip extends Model
     protected $casts = [
         'base_pay' => 'decimal:4',
         'attendance_pay' => 'decimal:4',
+        'overtime_pay' => 'decimal:4',
         'labor_log_pay' => 'decimal:4',
         'additions' => 'array',
         'additions_pay' => 'decimal:4',

@@ -75,6 +75,7 @@ use App\Http\Controllers\Api\v1\UserController;
 use App\Http\Controllers\Api\v1\WarehouseController;
 use App\Http\Controllers\Api\v1\WarehouseTransferController;
 use App\Http\Controllers\Api\v1\WorkOrderController;
+use App\Http\Controllers\Api\v1\WorkShiftController;
 use Illuminate\Support\Facades\Route;
 
 Route::prefix('v1')->group(function () {
@@ -285,6 +286,11 @@ Route::prefix('v1')->group(function () {
                 Route::delete('/employees/{id}/pay-items/{itemId}', [EmployeePayItemController::class, 'destroy'])->whereUuid('itemId');
                 Route::get('/hr-settings', [HrSettingsController::class, 'show']);
                 Route::put('/hr-settings', [HrSettingsController::class, 'update']);
+                // W5-04 (HR-14): work shifts (overtime multiplier, standard hours); pay roles write.
+                Route::get('/work-shifts', [WorkShiftController::class, 'index']);
+                Route::post('/work-shifts', [WorkShiftController::class, 'store']);
+                Route::put('/work-shifts/{id}', [WorkShiftController::class, 'update'])->whereUuid('id');
+                Route::delete('/work-shifts/{id}', [WorkShiftController::class, 'destroy'])->whereUuid('id');
                 Route::apiResource('employees', EmployeeController::class);
                 Route::get('/attendance', [AttendanceController::class, 'index']);
                 Route::post('/attendance', [AttendanceController::class, 'store']);

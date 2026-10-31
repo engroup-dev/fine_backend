@@ -96,6 +96,7 @@ class EntitiesSeeder extends Seeder
                     'pay_type' => fake()->randomElement(PayType::cases()),
                     'monthly_salary' => fake()->randomFloat(4, 800, 5000),
                     'hourly_rate' => fake()->randomFloat(4, 6, 25),
+                    'daily_rate' => fake()->randomFloat(4, 50, 200),
                     'hire_date' => fake()->dateTimeBetween('-5 years', '-30 days')->format('Y-m-d'),
                     'status' => EmployeeStatus::Active,
                 ]);
