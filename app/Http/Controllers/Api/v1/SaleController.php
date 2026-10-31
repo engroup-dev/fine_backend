@@ -10,6 +10,7 @@ use App\Models\Account;
 use App\Models\CashAccount;
 use App\Models\OperatingUnit;
 use App\Models\SalesOrder;
+use App\Services\InstallmentPlanService;
 use App\Services\SaleCheckoutService;
 use App\Services\TreasuryBalanceService;
 use App\Support\CurrentUnitContext;
@@ -27,6 +28,7 @@ final class SaleController extends Controller
     public function __construct(
         private readonly SaleCheckoutService $checkoutService,
         private readonly CurrentUnitContext $unitContext,
+        private readonly InstallmentPlanService $installments,
     ) {}
 
     public function index(Request $request): JsonResponse
@@ -87,6 +89,7 @@ final class SaleController extends Controller
             'price_override.reason' => ['required_with:price_override', 'string', 'max:255'],
             'notes' => ['nullable', 'string'],
             ...SaleCheckoutService::splitPaymentRules(),
+            ...InstallmentPlanService::rules('installment_plan'),
             'lines' => ['required', 'array', 'min:1'],
             'lines.*.line_type' => ['nullable', Rule::in(['item', 'bundle'])],
             'lines.*.inventory_item_id' => ['nullable', 'uuid', 'exists:inventory_items,id'],
@@ -112,30 +115,49 @@ final class SaleController extends Controller
 
         $sale = $this->checkoutService->checkout($unit, $validated, $request->user());
 
-        return response()->json($sale, 201);
+        return response()->json($this->withSchedule($sale), 201);
     }
 
+    /**
+     * The sale with its installment schedule (W5-08), whose line statuses are
+     * derived from the sale's collections as of today.
+     */
     public function show(string $id): JsonResponse
     {
-        return response()->json(
-            SalesOrder::with([
-                'lines.inventoryItem',
-                'lines.stockLot',
-                'lines.bundle.items.inventoryItem',
-                'lines.components.inventoryItem',
-                'lines.components.allocations.stockLot',
-                'client.entity.primaryContact',
-                'buyerUnit',
-                'cashAccount',
-                'payments.cashAccount',
-                'payments.cheque',
-                'payments.receivedBy:id,name',
-                'soldBy:id,name',
-                'priceOverrideBy:id,name',
-                'creditApprovalRequest.decidedBy:id,name',
-                'returns:id,sales_order_id,number,return_date,amount,refund_method',
-            ])->findOrFail($id)
-        );
+        $sale = SalesOrder::with([
+            'lines.inventoryItem',
+            'lines.stockLot',
+            'lines.bundle.items.inventoryItem',
+            'lines.components.inventoryItem',
+            'lines.components.allocations.stockLot',
+            'client.entity.primaryContact',
+            'buyerUnit',
+            'cashAccount',
+            'payments.cashAccount',
+            'payments.cheque',
+            'payments.receivedBy:id,name',
+            'soldBy:id,name',
+            'priceOverrideBy:id,name',
+            'creditApprovalRequest.decidedBy:id,name',
+            'returns:id,sales_order_id,number,return_date,amount,refund_method',
+            'installmentPlan.lines',
+        ])->findOrFail($id);
+
+        return response()->json($this->withSchedule($sale));
+    }
+
+    /**
+     * W5-08: put an existing receivable sale with something outstanding on
+     * equal monthly installments, optionally taking a down payment first.
+     */
+    public function storeInstallmentPlan(Request $request, string $id): JsonResponse
+    {
+        $validated = $request->validate(InstallmentPlanService::rules());
+
+        $sale = SalesOrder::findOrFail($id);
+        $plan = $this->checkoutService->addInstallmentPlan($sale, $validated, $request->user());
+
+        return response()->json($this->installments->schedule($plan), 201);
     }
 
     /**
@@ -158,7 +180,7 @@ final class SaleController extends Controller
 
         $sale = SalesOrder::findOrFail($id);
 
-        return response()->json($this->checkoutService->collectPayment(
+        return response()->json($this->withSchedule($this->checkoutService->collectPayment(
             $sale,
             (float) $validated['amount'],
             $validated['method'],
@@ -166,7 +188,25 @@ final class SaleController extends Controller
             $request->user(),
             isset($validated['tendered_amount']) ? (float) $validated['tendered_amount'] : null,
             $validated['cheque'] ?? null,
-        ));
+        )));
+    }
+
+    /**
+     * W5-08: a sale as JSON with `installment_plan` always in one shape, the
+     * derived schedule (line statuses, paid and remaining, totals) or null.
+     *
+     * @return array<string, mixed>
+     */
+    private function withSchedule(SalesOrder $sale): array
+    {
+        $sale->loadMissing('installmentPlan.lines');
+        $plan = $sale->installmentPlan;
+        $sale->unsetRelation('installmentPlan');
+
+        return [
+            ...$sale->toArray(),
+            'installment_plan' => $plan !== null ? $this->installments->schedule($plan, $sale) : null,
+        ];
     }
 
     /**

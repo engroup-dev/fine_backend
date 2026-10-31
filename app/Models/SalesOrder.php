@@ -128,6 +128,14 @@ final class SalesOrder extends Model
     }
 
     /**
+     * W5-08: the optional installment schedule of a receivable sale.
+     */
+    public function installmentPlan(): HasOne
+    {
+        return $this->hasOne(InstallmentPlan::class);
+    }
+
+    /**
      * SALE-03: only external client sales face the credit gate.
      */
     public function isCreditGated(): bool

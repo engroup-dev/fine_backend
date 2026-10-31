@@ -16,15 +16,18 @@ use App\Models\ChequeEvent;
 use App\Models\Client;
 use App\Models\ClientAddress;
 use App\Models\CreditApprovalRequest;
+use App\Models\InstallmentPlan;
 use App\Models\InventoryItem;
 use App\Models\OperatingUnit;
 use App\Models\SalePayment;
 use App\Models\SalesOrder;
 use App\Models\SalesOrderLine;
 use App\Models\User;
+use App\Support\CompanyClock;
 use App\Support\InventoryAccounts;
 use App\Support\ReceivableAccounts;
 use App\Support\SalesAccounts;
+use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Validation\ValidationRule;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\DB;
@@ -58,6 +61,7 @@ final class SaleCheckoutService
         private readonly ChequeService $chequeService,
         private readonly PriceFloorGuard $priceFloorGuard,
         private readonly PosShiftService $posShifts,
+        private readonly InstallmentPlanService $installments,
     ) {}
 
     /**
@@ -105,6 +109,7 @@ final class SaleCheckoutService
      *     price_tier?: string|null,
      *     price_override?: array{login?: string|null, password?: string|null, reason?: string|null}|null,
      *     invoice_discount?: float|int|string|null,
+     *     installment_plan?: array{count?: int|string|null, first_due_date?: string|null, down_payment?: float|int|string|null, down_payment_method?: string|null, cash_account_id?: string|null}|null,
      *     notes?: string|null,
      *     lines: array<int, array{
      *         line_type?: string|null,
@@ -130,6 +135,16 @@ final class SaleCheckoutService
         }
 
         $this->posDayGuard->ensureOpen($unit);
+
+        // W5-08: a schedule rides only on a registered client's receivable sale.
+        $installmentPlan = ! empty($data['installment_plan']) ? $data['installment_plan'] : null;
+        if ($installmentPlan !== null
+            && (($data['payment_method'] ?? null) !== 'receivable' || empty($data['client_id']) || ! empty($data['buyer_unit_id']))) {
+            throw new SalesRuleException(
+                'Installments apply only to a registered client\'s credit (receivable) sale.',
+                'INSTALLMENTS_NEED_RECEIVABLE',
+            );
+        }
 
         if (($data['payment_method'] ?? null) === 'split') {
             if (! empty($data['buyer_unit_id'])) {
@@ -192,6 +207,10 @@ final class SaleCheckoutService
             $changeGiven = round($tendered - $total, 4);
         }
 
+        if ($installmentPlan !== null) {
+            $this->checkInstallmentPlan($installmentPlan, $total, CompanyClock::today($unit));
+        }
+
         $splitPayments = null;
         if ($method === 'split') {
             $splitPayments = $this->resolveSplitPayments($data['payments'] ?? [], $total, $client !== null);
@@ -215,7 +234,7 @@ final class SaleCheckoutService
         $walkInPhone = $isWalkIn && isset($data['walk_in_phone']) ? trim((string) $data['walk_in_phone']) : null;
 
         try {
-            return DB::transaction(function () use ($unit, $data, $seller, $client, $buyerUnit, $deliveryAddress, $priceTier, $override, $method, $cashAccount, $lines, $gross, $invoiceDiscount, $total, $requestId, $tendered, $changeGiven, $splitPayments, $walkInName, $walkInPhone): SalesOrder {
+            return DB::transaction(function () use ($unit, $data, $seller, $client, $buyerUnit, $deliveryAddress, $priceTier, $override, $method, $cashAccount, $lines, $gross, $invoiceDiscount, $total, $requestId, $tendered, $changeGiven, $splitPayments, $walkInName, $walkInPhone, $installmentPlan): SalesOrder {
                 $order = SalesOrder::create([
                     'operating_unit_id' => $unit->id,
                     'order_number' => $this->documentNumbers->next(DocumentNumberService::SALE),
@@ -252,11 +271,32 @@ final class SaleCheckoutService
                 $order->total_amount = $total;
                 $order->save();
 
-                if ($method === 'receivable' && $client !== null && $this->exceedsCreditLimit($client, $total)) {
+                // W5-08: a down payment is collected in this same transaction, so
+                // only what is left on credit counts against the limit.
+                $creditExposure = $installmentPlan !== null
+                    ? round($total - (float) ($installmentPlan['down_payment'] ?? 0), 4)
+                    : $total;
+
+                if ($method === 'receivable' && $client !== null && $this->exceedsCreditLimit($client, $creditExposure)) {
+                    // W5-08: nothing is posted while credit waits, so no down payment can be
+                    // taken; the schedule is added once the sale is approved.
+                    if ($installmentPlan !== null) {
+                        throw new SalesRuleException(
+                            'This sale needs credit approval first; add the installment plan once it is approved.',
+                            'INSTALLMENT_CREDIT_PENDING',
+                        );
+                    }
+
                     return $this->escalate($order, $client, $total);
                 }
 
                 $this->finalize($order, $data['buyer_warehouse_id'] ?? null, $seller, $tendered, $changeGiven, $splitPayments);
+
+                // W5-08: the sale posts as today; the down payment is collected and the
+                // schedule opened in the same transaction.
+                if ($installmentPlan !== null) {
+                    $this->openInstallmentPlan($order, $installmentPlan, $seller);
+                }
 
                 return $this->reload($order);
             });
@@ -435,6 +475,38 @@ final class SaleCheckoutService
     }
 
     /**
+     * W5-08: put an existing receivable sale with something outstanding on
+     * installments, optionally collecting a down payment first.
+     *
+     * @param  array{count?: int|string|null, first_due_date?: string|null, down_payment?: float|int|string|null, down_payment_method?: string|null, cash_account_id?: string|null}  $plan
+     */
+    public function addInstallmentPlan(SalesOrder $order, array $plan, User $user): InstallmentPlan
+    {
+        $this->installments->ensureEligible($order);
+
+        try {
+            return DB::transaction(function () use ($order, $plan, $user): InstallmentPlan {
+                $locked = SalesOrder::whereKey($order->getKey())->lockForUpdate()->firstOrFail();
+                $this->installments->ensureEligible($locked);
+
+                return $this->openInstallmentPlan($locked, $plan, $user);
+            });
+        } catch (UniqueConstraintViolationException $e) {
+            // Only a concurrent plan on this sale is INSTALLMENT_PLAN_EXISTS; any
+            // other unique collision (e.g. the down payment's journal reference)
+            // is a real error and stays one.
+            if (InstallmentPlan::withoutGlobalScopes()->where('sales_order_id', $order->id)->exists()) {
+                throw new SalesRuleException(
+                    "Sale {$order->order_number} already has an installment plan.",
+                    'INSTALLMENT_PLAN_EXISTS',
+                );
+            }
+
+            throw $e;
+        }
+    }
+
+    /**
      * Re-derive open/completed after goods or money moved. Used by bundle
      * delivery once the last piece is handed over.
      */
@@ -443,6 +515,107 @@ final class SaleCheckoutService
         if ($order->status === SalesOrderStatus::Open || $order->status === SalesOrderStatus::Completed) {
             $order->status = $this->settledStatus($order);
             $order->save();
+        }
+    }
+
+    /**
+     * W5-08: collect the down payment through the ordinary collection path,
+     * then schedule what is still owed. The caller holds the sale's lock.
+     *
+     * @param  array<string, mixed>  $plan
+     */
+    private function openInstallmentPlan(SalesOrder $order, array $plan, User $user): InstallmentPlan
+    {
+        if (InstallmentPlan::withoutGlobalScopes()->where('sales_order_id', $order->id)->exists()) {
+            throw new SalesRuleException(
+                "Sale {$order->order_number} already has an installment plan.",
+                'INSTALLMENT_PLAN_EXISTS',
+            );
+        }
+
+        $outstanding = $order->outstanding();
+        if ($outstanding <= 0.0001) {
+            throw new SalesRuleException(
+                "Sale {$order->order_number} has nothing outstanding to put on installments.",
+                'INSTALLMENT_NOTHING_OUTSTANDING',
+            );
+        }
+
+        $this->checkInstallmentPlan($plan, $outstanding, $this->saleDate($order));
+
+        $downPayment = round((float) ($plan['down_payment'] ?? 0), 4);
+        if ($downPayment > 0) {
+            $this->collectPayment(
+                $order,
+                $downPayment,
+                (string) $plan['down_payment_method'],
+                $plan['cash_account_id'] ?? null,
+                $user,
+            );
+        }
+
+        $fresh = SalesOrder::whereKey($order->id)->lockForUpdate()->firstOrFail();
+
+        return $this->installments->create($fresh, (int) $plan['count'], (string) $plan['first_due_date'], $downPayment, $user);
+    }
+
+    /**
+     * The company-local date the sale was made.
+     */
+    private function saleDate(SalesOrder $order): string
+    {
+        $created = $order->created_at;
+
+        return $created === null
+            ? CompanyClock::today($order->operatingUnit)
+            : CarbonImmutable::parse($created)->setTimezone(CompanyClock::timezone($order->operatingUnit))->toDateString();
+    }
+
+    /**
+     * W5-08: the plan's shape against what the client owes: a count in range,
+     * a first due date on or after the sale's date, and a down payment (cash
+     * or bank) that leaves something to schedule.
+     *
+     * @param  array<string, mixed>  $plan
+     */
+    private function checkInstallmentPlan(array $plan, float $owed, string $earliestDueDate): void
+    {
+        $count = (int) ($plan['count'] ?? 0);
+        if ($count < 1 || $count > InstallmentPlanService::MAX_INSTALLMENTS) {
+            throw new SalesRuleException(
+                'An installment plan has between 1 and '.InstallmentPlanService::MAX_INSTALLMENTS.' installments.',
+                'INSTALLMENT_COUNT_INVALID',
+            );
+        }
+
+        if (empty($plan['first_due_date'])) {
+            throw new SalesRuleException('Choose the first installment\'s due date.', 'INSTALLMENT_FIRST_DUE_DATE_REQUIRED');
+        }
+
+        if ((string) $plan['first_due_date'] < $earliestDueDate) {
+            throw new SalesRuleException(
+                "The first installment cannot fall due before the sale's date ({$earliestDueDate}).",
+                'INSTALLMENT_FIRST_DUE_DATE_INVALID',
+                ['earliest' => $earliestDueDate],
+            );
+        }
+
+        $downPayment = round((float) ($plan['down_payment'] ?? 0), 4);
+        if ($downPayment < 0 || $downPayment >= $owed - 0.0001) {
+            throw new SalesRuleException(
+                "The down payment must be at least zero and less than the {$owed} owed.",
+                'INSTALLMENT_DOWN_PAYMENT_INVALID',
+                ['owed' => $owed],
+            );
+        }
+
+        if ($downPayment > 0) {
+            $method = $plan['down_payment_method'] ?? null;
+            if (! in_array($method, ['cash', 'bank'], true)) {
+                throw new SalesRuleException('A down payment is received in cash or by bank.', 'PAYMENT_METHOD_REQUIRED');
+            }
+
+            $this->resolveTreasury($plan['cash_account_id'] ?? null, $method);
         }
     }
 

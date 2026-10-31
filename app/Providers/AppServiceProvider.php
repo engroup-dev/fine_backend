@@ -24,6 +24,8 @@ use App\Models\Entity;
 use App\Models\FiscalPeriod;
 use App\Models\FiscalYear;
 use App\Models\FixedAsset;
+use App\Models\InstallmentLine;
+use App\Models\InstallmentPlan;
 use App\Models\InternalRestockRequest;
 use App\Models\InventoryItem;
 use App\Models\ItemCategory;
@@ -148,6 +150,8 @@ class AppServiceProvider extends ServiceProvider
         SalesOrder::observe(AuditObserver::class);
         SalesReturn::observe(AuditObserver::class);
         SalesReturnLine::observe(AuditObserver::class);
+        InstallmentPlan::observe(AuditObserver::class);
+        InstallmentLine::observe(AuditObserver::class);
         PosShift::observe(AuditObserver::class);
         StockCount::observe(AuditObserver::class);
         StockCountLine::observe(AuditObserver::class);

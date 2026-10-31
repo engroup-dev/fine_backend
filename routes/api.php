@@ -33,6 +33,7 @@ use App\Http\Controllers\Api\v1\FxRateController;
 use App\Http\Controllers\Api\v1\GoodsReceiptController;
 use App\Http\Controllers\Api\v1\HeldCartController;
 use App\Http\Controllers\Api\v1\HrSettingsController;
+use App\Http\Controllers\Api\v1\InstallmentController;
 use App\Http\Controllers\Api\v1\InternalRestockController;
 use App\Http\Controllers\Api\v1\InventoryItemController;
 use App\Http\Controllers\Api\v1\InventoryMovementController;
@@ -396,6 +397,11 @@ Route::prefix('v1')->group(function () {
                 Route::post('/material-requests/{id}/cancel', [MaterialRequestController::class, 'cancel']);
             });
 
+            // Installments due / overdue (W5-08, decision #6): whoever sells or follows debtors.
+            Route::middleware(['require.role:owner,store-manager,pos-cashier,cutter-manager,unit_manager,manager,accounting-manager,treasury-officer', 'require.module:view-sales|view-debtor-statements'])->group(function () {
+                Route::get('/installments', [InstallmentController::class, 'index']);
+            });
+
             // Sales & POS — the POS is the one place every sale happens.
             Route::middleware(['require.role:owner,store-manager,pos-cashier,cutter-manager,unit_manager,manager', 'require.module:view-sales,create-sales'])->group(function () {
                 Route::get('/sales', [SaleController::class, 'index']);
@@ -403,6 +409,7 @@ Route::prefix('v1')->group(function () {
                 Route::get('/sales/payment-accounts', [SaleController::class, 'paymentAccounts']);
                 Route::get('/sales/{id}', [SaleController::class, 'show'])->whereUuid('id');
                 Route::post('/sales/{id}/payments', [SaleController::class, 'collectPayment'])->whereUuid('id');
+                Route::post('/sales/{id}/installment-plan', [SaleController::class, 'storeInstallmentPlan'])->whereUuid('id');
                 Route::get('/sales/{id}/invoice', [SaleController::class, 'invoice'])->whereUuid('id');
                 Route::get('/sales/{id}/delivery-note', [SaleBundleController::class, 'deliveryNote'])->whereUuid('id');
                 Route::post('/sales/{id}/deliver', [SaleBundleController::class, 'deliver'])->whereUuid('id');
