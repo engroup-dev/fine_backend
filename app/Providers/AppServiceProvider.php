@@ -45,6 +45,7 @@ use App\Models\SalesReturnLine;
 use App\Models\StockCount;
 use App\Models\StockCountLine;
 use App\Models\StockLot;
+use App\Models\Supplier;
 use App\Models\TreasuryTransfer;
 use App\Models\TreasuryVoucher;
 use App\Models\User;
@@ -143,6 +144,7 @@ class AppServiceProvider extends ServiceProvider
         ClientGroup::observe(AuditObserver::class);
         ClientCreditLimitChange::observe(AuditObserver::class);
         Entity::observe(AuditObserver::class);
+        Supplier::observe(AuditObserver::class);
         SalesOrder::observe(AuditObserver::class);
         SalesReturn::observe(AuditObserver::class);
         SalesReturnLine::observe(AuditObserver::class);

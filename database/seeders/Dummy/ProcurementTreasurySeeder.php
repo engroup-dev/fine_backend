@@ -20,6 +20,7 @@ use App\Models\PurchaseOrder;
 use App\Models\PurchaseOrderItem;
 use App\Models\Supplier;
 use App\Models\User;
+use App\Services\SupplierService;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Str;
 
@@ -50,6 +51,8 @@ class ProcurementTreasurySeeder extends Seeder
                 ['name' => $s['name']],
                 $s + ['id' => (string) Str::uuid(), 'operating_unit_id' => $procurement->id],
             );
+            // W5-07: every supplier stands on a vendor entity of its unit.
+            app(SupplierService::class)->ensureEntity($supplier);
             $supplierIds[] = $supplier->id;
         }
 

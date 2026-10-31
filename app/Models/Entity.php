@@ -68,6 +68,15 @@ final class Entity extends Model
         return $this->hasOne(Client::class);
     }
 
+    /**
+     * W5-07: the entity's supplier record (vendor role), within the caller's
+     * unit scope.
+     */
+    public function supplier(): HasOne
+    {
+        return $this->hasOne(Supplier::class);
+    }
+
     public function scopeIndividual(Builder $query): Builder
     {
         return $query->where('entity_type', EntityType::Individual);

@@ -13,7 +13,8 @@ use Illuminate\Validation\Rule;
 
 final class AuditLogController extends Controller
 {
-    private const VALID_ACTIONS = ['created', 'updated', 'deleted', 'restored'];
+    /** 'merged' is SupplierService::merge's row on the surviving supplier (W5-07). */
+    private const VALID_ACTIONS = ['created', 'updated', 'deleted', 'restored', 'merged'];
 
     /**
      * Display a paginated listing of audit logs, newest first, with optional

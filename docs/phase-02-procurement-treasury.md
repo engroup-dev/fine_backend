@@ -82,6 +82,8 @@ Received ──[Accounting verifies all costs settled]──► Complete
 | `AwaitingReceipt → Received` | Creates `GoodsReceipt`; increments Main Warehouse inventory (provisional value) |
 | `Received → Complete` | Allocates full landed cost into raw-material valuation; posts AP settlement + landed-cost journal entries |
 
+**Supplier leg of purchase order journals (W5-07).** A payment (import `executePayment`, local `payLocal`) debits the order supplier's own ledger account, or the shared `15` Advances to Suppliers when the supplier has none; the supplier is found whatever operating unit it belongs to (the caller's `X-Operating-Unit-ID` plays no part) and a soft-deleted supplier counts as having no account. The clearing credit (the import completion journal and the local receipt journal) does not re-derive that account: it credits the one supplier-side account (`15` or any supplier-linked account) on which the order's own earlier entries (source `PurchaseOrder` or its `PaymentRequest`s, reversals included) left a net debit, so an order paid on `15` before its supplier got an account, or paid under another unit's header before W5-07, still clears to zero where it opened. Only when nothing has posted for the order yet, or balances sit on more than one such account (no split is invented), does the clearing fall back to the payment rule. Both lookups lock suppliers before orders, the order a supplier merge takes them in.
+
 ---
 
 ## 2.5 API Endpoints (This Phase)

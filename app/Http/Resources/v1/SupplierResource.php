@@ -25,6 +25,10 @@ final class SupplierResource extends JsonResource
             'contact' => $this->contact,
             'default_currency' => $this->default_currency,
             'address' => $this->address,
+            // W5-07: the supplier's party; the tax number lives on the entity.
+            'entity_id' => $this->entity_id,
+            'tax_number' => $this->relationLoaded('entity') ? $this->entity?->tax_number : null,
+            'record_version' => $this->record_version,
             'created_at' => $this->created_at?->toISOString(),
             'updated_at' => $this->updated_at?->toISOString(),
         ];

@@ -22,6 +22,12 @@ final class EntityResource extends JsonResource
             'city' => $this->relationLoaded('primaryContact') ? $this->primaryContact?->city : null,
             'address' => $this->relationLoaded('primaryContact') ? $this->primaryContact?->address : null,
             'primary_contact' => $this->whenLoaded('primaryContact'),
+            // W5-07: which parties the entity already is (client, vendor,
+            // employee) and in which unit, so a picker can show it.
+            'roles' => $this->whenLoaded('roles', fn () => $this->roles->map(fn ($role): array => [
+                'role_type' => is_object($role->role_type) ? $role->role_type->value : $role->role_type,
+                'operating_unit_id' => $role->operating_unit_id,
+            ])->values()->all()),
             'record_version' => $this->record_version,
             'created_at' => $this->created_at?->toIso8601String(),
             'updated_at' => $this->updated_at?->toIso8601String(),

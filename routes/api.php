@@ -260,6 +260,8 @@ Route::prefix('v1')->group(function () {
 
             // Procurement
             Route::middleware(['require.role:owner,procurement-manager,treasury-officer,accounting-manager,hr-manager,inventory-manager,foam-manager,cutter-manager,furniture-manager,store-manager,unit_manager,manager', 'require.module:view-procurement,edit-procurement'])->group(function () {
+                // W5-07: merge a duplicate supplier into another (the source is soft-deleted).
+                Route::post('/suppliers/{id}/merge', [SupplierController::class, 'merge'])->whereUuid('id');
                 Route::apiResource('suppliers', SupplierController::class);
                 Route::apiResource('purchase-orders', PurchaseOrderController::class)->only(['index', 'store', 'show', 'update']);
                 Route::post('/purchase-orders/{id}/transition', [PurchaseOrderController::class, 'transition']);

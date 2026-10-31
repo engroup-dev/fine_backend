@@ -19,6 +19,7 @@ use App\Models\LandedCostLine;
 use App\Models\PaymentRequest;
 use App\Models\PurchaseOrder;
 use App\Models\PurchaseOrderItem;
+use App\Models\Scopes\OperatingUnitScope;
 use App\Models\StockLot;
 use App\Models\Supplier;
 use App\Models\Warehouse;
@@ -291,13 +292,7 @@ final class PurchaseOrderStateService
             // clears 1500 with the same settled amount, so it nets exactly).
             $functionalCurrency = $order->operatingUnit?->company?->default_currency ?? 'LYD';
 
-            $supplierAccountCode = '15';
-            if ($order?->supplier_id !== null) {
-                $supplier = Supplier::with('account')->find($order->supplier_id);
-                if ($supplier?->account?->account_code) {
-                    $supplierAccountCode = $supplier->account->account_code;
-                }
-            }
+            $supplierAccountCode = $this->lockSupplierAccountCode($order);
 
             // The treasury or bank leaf the money leaves from. There is no
             // fallback: posting to the 12 header would hide the payment from
@@ -363,6 +358,76 @@ final class PurchaseOrderStateService
 
             return $paymentRequest->refresh();
         });
+    }
+
+    /**
+     * The account an order's payment leg posts to: the supplier's own
+     * account, or the shared '15' Advances to Suppliers when it has none.
+     * The supplier is found whatever unit it belongs to (the caller's unit
+     * header plays no part) and a soft-deleted supplier counts as none. The
+     * clearing legs go through lockClearingAccountCode() instead, which
+     * follows the order's own payment entries.
+     *
+     * W5-07: the supplier row and then the order row are locked (the same
+     * order SupplierService::merge takes them in), and the order's supplier
+     * is re-read under the lock, so a posting and a supplier merge
+     * serialize: the posting either lands before the merge scans the order's
+     * balances, or it waits and posts on the surviving supplier's account.
+     */
+    private function lockSupplierAccountCode(?PurchaseOrder $order): string
+    {
+        if ($order === null) {
+            return '15';
+        }
+
+        for ($attempt = 0; $attempt < 3; $attempt++) {
+            $supplierId = PurchaseOrder::query()->withoutGlobalScopes()->whereKey($order->id)->value('supplier_id');
+
+            $supplier = $supplierId === null ? null : Supplier::query()
+                ->withoutGlobalScope(OperatingUnitScope::class)
+                ->with('account')
+                ->lockForUpdate()
+                ->find($supplierId);
+
+            $lockedSupplierId = PurchaseOrder::query()->withoutGlobalScopes()->whereKey($order->id)->lockForUpdate()->value('supplier_id');
+
+            if ($lockedSupplierId === $supplierId) {
+                if ($order->supplier_id !== $supplierId) {
+                    // A merge moved the order while this request was on its way.
+                    $order->supplier_id = $supplierId;
+                    $order->syncOriginalAttribute('supplier_id');
+                    $order->unsetRelation('supplier');
+                }
+
+                return $supplier?->account?->account_code ?? '15';
+            }
+        }
+
+        throw new InvalidStateTransitionException('The purchase order\'s supplier keeps changing; try again.');
+    }
+
+    /**
+     * The account a clearing leg (the completion journal, the local receipt)
+     * credits: the one supplier-side account on which this order's own
+     * earlier entries left a net debit, so the clearing lands where the
+     * order's payment did, whatever rule or supplier account was in force
+     * when it was paid (a payment on '15' before the supplier had an account,
+     * or before W5-07 under another unit's header). With nothing posted yet,
+     * or with balances on more than one account (no split is invented), it
+     * falls back to the payment rule, lockSupplierAccountCode(), which also
+     * takes the supplier and order locks.
+     */
+    private function lockClearingAccountCode(PurchaseOrder $order): string
+    {
+        $paymentRuleCode = $this->lockSupplierAccountCode($order);
+
+        $balances = SupplierService::supplierSideBalancesByOrder(collect([$order->id]))[$order->id] ?? [];
+
+        if (count($balances) === 1 && reset($balances) > 0) {
+            return (string) array_key_first($balances);
+        }
+
+        return $paymentRuleCode;
     }
 
     /**
@@ -592,19 +657,13 @@ final class PurchaseOrderStateService
             throw new InvalidArgumentException('Linked payment source account does not exist.');
         }
 
-        // Resolve the supplier advance code: linked sub-account if present,
-        // otherwise the universal '15' Advances to Suppliers.
-        $supplierAccountCode = '15';
-        if ($order->supplier_id !== null) {
-            $supplier = Supplier::with('account')->find($order->supplier_id);
-            if ($supplier?->account?->account_code) {
-                $supplierAccountCode = $supplier->account->account_code;
-            }
-        }
-
         $totalLyd = (float) $order->totalCost();
 
-        return DB::transaction(function () use ($order, $source, $supplierAccountCode, $totalLyd) {
+        return DB::transaction(function () use ($order, $source, $totalLyd) {
+            // The supplier advance code: linked sub-account if present,
+            // otherwise the universal '15' Advances to Suppliers.
+            $supplierAccountCode = $this->lockSupplierAccountCode($order);
+
             if ($totalLyd > 0) {
                 $this->accountingService->postJournal(
                     "Local PO paid — {$order->supplier?->name}",
@@ -766,16 +825,10 @@ final class PurchaseOrderStateService
             ];
         }
 
-        $supplierAccountCode = '15';
-        if ($order->supplier_id !== null) {
-            $supplier = Supplier::with('account')->find($order->supplier_id);
-            if ($supplier?->account?->account_code) {
-                $supplierAccountCode = $supplier->account->account_code;
-            }
-        }
+        $supplierAccountCode = $this->lockClearingAccountCode($order);
 
         $supplierLine = [
-            'account_code' => $supplierAccountCode, // Advances to Suppliers (or linked supplier account) — cleared
+            'account_code' => $supplierAccountCode, // where this order's payment left its debit — cleared
             'credit' => $settled,
             'operating_unit_id' => $order->operating_unit_id,
             'memo' => $order->supplier?->name,
@@ -1010,13 +1063,7 @@ final class PurchaseOrderStateService
             }
 
             if ($totalInventoryLyd > 0 && ! empty($perAccountDebits)) {
-                $supplierAccountCode = '15';
-                if ($order->supplier_id !== null) {
-                    $supplier = Supplier::with('account')->find($order->supplier_id);
-                    if ($supplier?->account?->account_code) {
-                        $supplierAccountCode = $supplier->account->account_code;
-                    }
-                }
+                $supplierAccountCode = $this->lockClearingAccountCode($order);
 
                 $lines = [];
                 foreach ($perAccountDebits as $accountCode => $amount) {

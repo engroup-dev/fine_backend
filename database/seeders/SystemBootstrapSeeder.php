@@ -44,6 +44,7 @@ use App\Models\Warehouse;
 use App\Services\AccountingService;
 use App\Services\OperatingUnitService;
 use App\Services\ProductionBatchService;
+use App\Services\SupplierService;
 use App\Support\ReceivableAccounts;
 use App\Support\SalesAccounts;
 use App\Support\UnitRevenueAccounts;
@@ -562,8 +563,10 @@ class SystemBootstrapSeeder extends Seeder
                 'address' => 'Istanbul Industrial Park, Turkey',
             ],
         );
+        // W5-07: every supplier stands on a vendor entity of its unit.
+        app(SupplierService::class)->ensureEntity($supplier);
 
-        Supplier::firstOrCreate(
+        $cairoSupplier = Supplier::firstOrCreate(
             ['name' => 'Cairo Foam & Filling Co.'],
             [
                 'id' => (string) Str::uuid(),
@@ -573,6 +576,7 @@ class SystemBootstrapSeeder extends Seeder
                 'address' => 'Cairo Industrial Zone, Egypt',
             ],
         );
+        app(SupplierService::class)->ensureEntity($cairoSupplier);
 
         // Order 1: in transit with bank hold
         $order1 = PurchaseOrder::where('supplier_id', $supplier->id)

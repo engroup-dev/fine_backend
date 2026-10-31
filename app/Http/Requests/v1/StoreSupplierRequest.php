@@ -6,6 +6,7 @@ namespace App\Http\Requests\v1;
 
 use App\Rules\LeafAccount;
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\Rule;
 
 final class StoreSupplierRequest extends FormRequest
 {
@@ -29,6 +30,11 @@ final class StoreSupplierRequest extends FormRequest
             'new_account.account_code' => 'required_if:coa_action,create_new|nullable|string|max:50|unique:accounts,account_code',
             'new_account.name' => 'required_if:coa_action,create_new|nullable|string|max:255',
             'new_account.currency' => 'nullable|string|size:3',
+            // W5-07: link an existing entity (a client's, for example) instead
+            // of creating a new one; force skips the duplicate check.
+            'entity_id' => ['nullable', 'uuid', Rule::exists('entities', 'id')->whereNull('deleted_at')],
+            'tax_number' => 'nullable|string|max:100',
+            'force' => 'sometimes|boolean',
         ];
     }
 }

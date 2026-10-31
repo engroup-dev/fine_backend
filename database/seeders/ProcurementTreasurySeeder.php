@@ -24,6 +24,7 @@ use App\Models\PurchaseOrderItem;
 use App\Models\Supplier;
 use App\Models\Warehouse;
 use App\Services\AccountingService;
+use App\Services\SupplierService;
 use Illuminate\Database\Seeder;
 use Illuminate\Support\Str;
 
@@ -94,6 +95,8 @@ final class ProcurementTreasurySeeder extends Seeder
             'default_currency' => 'USD',
             'address' => 'Istanbul Industrial Park, Turkey',
         ]);
+        // W5-07: every supplier stands on a vendor entity of its unit.
+        app(SupplierService::class)->ensureEntity($supplier);
 
         // 4. Seed Import Order 1 (In Transit with Bank Hold)
         $order1 = PurchaseOrder::create([
@@ -227,6 +230,7 @@ final class ProcurementTreasurySeeder extends Seeder
                 'address' => 'Tripoli Industrial Zone, Libya',
             ]
         );
+        app(SupplierService::class)->ensureEntity($localSupplier);
 
         $localOrder = PurchaseOrder::create([
             'id' => (string) Str::uuid(),
