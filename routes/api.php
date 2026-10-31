@@ -115,6 +115,13 @@ Route::prefix('v1')->group(function () {
             // Operating Units index (accessible to any authenticated user to view accessible units)
             Route::get('/operating-units', [OperatingUnitController::class, 'index'])->name('operating-units.index');
 
+            // W6-01: audit log viewer — owner and admin.
+            Route::middleware('require.role:owner,admin')->group(function () {
+                Route::get('/audit-logs', [AuditLogController::class, 'index']);
+                Route::get('/audit-logs/tables', [AuditLogController::class, 'tables']);
+                Route::get('/audit-logs/{tableName}/{recordId}', [AuditLogController::class, 'show']);
+            });
+
             // Admin: Owner and Global Admins only
             Route::middleware('require.role:owner')->group(function () {
                 // ACC-11, ACC-12: only the owner reopens a locked month or closed year, or changes the fiscal calendar.
@@ -146,8 +153,6 @@ Route::prefix('v1')->group(function () {
                 Route::get('/users/{id}/roles', [UserController::class, 'roles']);
                 Route::post('/users/{id}/roles/assign', [UserController::class, 'assignRole']);
                 Route::delete('/users/{id}/roles/{roleId}', [UserController::class, 'removeRole']);
-                Route::get('/audit-logs', [AuditLogController::class, 'index']);
-                Route::get('/audit-logs/{tableName}/{recordId}', [AuditLogController::class, 'show']);
                 Route::get('/system/versions', [SystemVersionController::class, 'index']);
                 Route::post('/admin/entities/{id}/provision-user', [ProvisionUserController::class]);
             });

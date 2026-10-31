@@ -17,6 +17,11 @@ final class AuditLogResource extends JsonResource
         return [
             'id' => $this->id,
             'user_id' => $this->user_id,
+            // W6-01: who made the change, by name (null for system rows).
+            'user' => $this->whenLoaded('user', fn () => $this->user === null ? null : [
+                'id' => $this->user->id,
+                'name' => $this->user->name,
+            ]),
             'operating_unit_id' => $this->operating_unit_id,
             'table_name' => $this->table_name,
             'record_id' => $this->record_id,
