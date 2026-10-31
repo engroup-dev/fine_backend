@@ -75,6 +75,7 @@ final class SaleController extends Controller
             'buyer_warehouse_id' => ['nullable', 'uuid', 'exists:warehouses,id'],
             'walk_in_name' => ['nullable', 'string', 'max:100'],
             'walk_in_phone' => ['nullable', 'string', 'max:30'],
+            'delivery_address_id' => ['nullable', 'uuid'],
             'payment_method' => ['nullable', Rule::in(['cash', 'bank', 'receivable', 'split', 'cheque'])],
             'cash_account_id' => ['nullable', 'uuid'],
             'tendered_amount' => ['nullable', 'numeric', 'min:0'],

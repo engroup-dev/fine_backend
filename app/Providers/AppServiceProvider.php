@@ -11,6 +11,8 @@ use App\Models\Bundle;
 use App\Models\BundleItem;
 use App\Models\Cheque;
 use App\Models\Client;
+use App\Models\ClientAddress;
+use App\Models\ClientCreditLimitChange;
 use App\Models\CutterWorkOrder;
 use App\Models\Employee;
 use App\Models\EmployeeAdjustment;
@@ -136,6 +138,8 @@ class AppServiceProvider extends ServiceProvider
         EmployeeAdjustment::observe(AuditObserver::class);
         WorkShift::observe(AuditObserver::class);
         Client::observe(AuditObserver::class);
+        ClientAddress::observe(AuditObserver::class);
+        ClientCreditLimitChange::observe(AuditObserver::class);
         Entity::observe(AuditObserver::class);
         SalesOrder::observe(AuditObserver::class);
         SalesReturn::observe(AuditObserver::class);

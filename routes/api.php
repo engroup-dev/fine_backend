@@ -13,6 +13,7 @@ use App\Http\Controllers\Api\v1\BankReconciliationController;
 use App\Http\Controllers\Api\v1\BundleController;
 use App\Http\Controllers\Api\v1\CashAccountController;
 use App\Http\Controllers\Api\v1\ChequeController;
+use App\Http\Controllers\Api\v1\ClientAddressController;
 use App\Http\Controllers\Api\v1\ClientController;
 use App\Http\Controllers\Api\v1\CreditApprovalController;
 use App\Http\Controllers\Api\v1\CutterWorkOrderController;
@@ -525,6 +526,16 @@ Route::prefix('v1')->group(function () {
             // Clients
             Route::middleware('require.role:owner,store-manager,pos-cashier,procurement-manager,accounting-manager,unit_manager,manager')->group(function () {
                 Route::apiResource('clients', ClientController::class)->middleware('require.module:view-clients,edit-clients');
+
+                // Client card: delivery addresses, credit limit history and the money summary.
+                Route::middleware('require.module:view-clients,edit-clients')->group(function () {
+                    Route::get('/clients/{id}/summary', [ClientController::class, 'summary'])->whereUuid('id');
+                    Route::get('/clients/{id}/credit-limit-changes', [ClientController::class, 'creditLimitChanges'])->whereUuid('id');
+                    Route::get('/clients/{clientId}/addresses', [ClientAddressController::class, 'index'])->whereUuid('clientId');
+                    Route::post('/clients/{clientId}/addresses', [ClientAddressController::class, 'store'])->whereUuid('clientId');
+                    Route::put('/clients/{clientId}/addresses/{addressId}', [ClientAddressController::class, 'update'])->whereUuid(['clientId', 'addressId']);
+                    Route::delete('/clients/{clientId}/addresses/{addressId}', [ClientAddressController::class, 'destroy'])->whereUuid(['clientId', 'addressId']);
+                });
             });
 
             // Owner Dashboard (guarded internally by ResolvesReportScope)

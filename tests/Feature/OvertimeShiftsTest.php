@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use App\Enums\PayType;
 use App\Models\Attendance;
 use App\Models\Company;
 use App\Models\Employee;
@@ -612,4 +613,16 @@ test('a unit role cannot record attendance or overtime for another unit employee
     ])->assertStatus(201);
 
     expect(Attendance::withoutGlobalScopes()->where('employee_id', $ours['id'])->value('overtime_hours'))->toEqual(2);
+});
+
+test('the employee factory gives a daily rate to an employee overridden to daily pay', function () {
+    foreach (range(1, 8) as $ignored) {
+        $daily = Employee::factory()->create(['operating_unit_id' => $this->unit->id, 'pay_type' => PayType::Daily]);
+        $monthly = Employee::factory()->create(['operating_unit_id' => $this->unit->id, 'pay_type' => PayType::Monthly]);
+
+        expect($daily->daily_rate)->not->toBeNull()
+            ->and($monthly->daily_rate)->toBeNull();
+    }
+
+    expect(Employee::factory()->daily()->create(['operating_unit_id' => $this->unit->id])->daily_rate)->not->toBeNull();
 });

@@ -12,6 +12,7 @@ use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 final class Client extends Model
 {
@@ -52,5 +53,15 @@ final class Client extends Model
     public function account(): BelongsTo
     {
         return $this->belongsTo(Account::class);
+    }
+
+    public function addresses(): HasMany
+    {
+        return $this->hasMany(ClientAddress::class);
+    }
+
+    public function creditLimitChanges(): HasMany
+    {
+        return $this->hasMany(ClientCreditLimitChange::class);
     }
 }

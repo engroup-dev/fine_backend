@@ -37,6 +37,8 @@ final class SalesOrder extends Model
         'buyer_unit_id',
         'walk_in_name',
         'walk_in_phone',
+        'delivery_address_id',
+        'delivery_address',
         'channel',
         'price_tier',
         'status',
@@ -75,6 +77,11 @@ final class SalesOrder extends Model
     public function client(): BelongsTo
     {
         return $this->belongsTo(Client::class);
+    }
+
+    public function deliveryAddress(): BelongsTo
+    {
+        return $this->belongsTo(ClientAddress::class, 'delivery_address_id')->withTrashed();
     }
 
     public function buyerUnit(): BelongsTo

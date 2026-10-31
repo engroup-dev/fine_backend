@@ -428,6 +428,7 @@ final class BundleFulfillmentService
             'seller' => $sale->operatingUnit?->name,
             'buyer' => $sale->client?->entity?->name ?? $sale->buyerUnit?->name,
             'buyer_phone' => $sale->client?->entity?->primaryContact?->phone,
+            'delivery_address' => $sale->delivery_address,
             'fulfillment_status' => $sale->fulfillment_status?->value,
             'lines' => $sale->lines->map(fn (SalesOrderLine $line) => [
                 'line_type' => $line->line_type,

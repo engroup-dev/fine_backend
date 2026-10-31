@@ -14,6 +14,7 @@ use App\Models\Bundle;
 use App\Models\CashAccount;
 use App\Models\ChequeEvent;
 use App\Models\Client;
+use App\Models\ClientAddress;
 use App\Models\CreditApprovalRequest;
 use App\Models\InventoryItem;
 use App\Models\OperatingUnit;
@@ -96,6 +97,7 @@ final class SaleCheckoutService
      *     buyer_warehouse_id?: string|null,
      *     walk_in_name?: string|null,
      *     walk_in_phone?: string|null,
+     *     delivery_address_id?: string|null,
      *     payment_method?: string|null,
      *     cash_account_id?: string|null,
      *     client_request_id?: string|null,
@@ -139,6 +141,7 @@ final class SaleCheckoutService
         }
 
         [$client, $buyerUnit] = $this->resolveBuyer($unit, $data);
+        $deliveryAddress = $this->resolveDeliveryAddress($client, $data['delivery_address_id'] ?? null);
         $isInternal = $buyerUnit !== null;
         $isWalkIn = $client === null && $buyerUnit === null;
         $priceTier = (string) ($data['price_tier'] ?? 'retail');
@@ -212,7 +215,7 @@ final class SaleCheckoutService
         $walkInPhone = $isWalkIn && isset($data['walk_in_phone']) ? trim((string) $data['walk_in_phone']) : null;
 
         try {
-            return DB::transaction(function () use ($unit, $data, $seller, $client, $buyerUnit, $priceTier, $override, $method, $cashAccount, $lines, $gross, $invoiceDiscount, $total, $requestId, $tendered, $changeGiven, $splitPayments, $walkInName, $walkInPhone): SalesOrder {
+            return DB::transaction(function () use ($unit, $data, $seller, $client, $buyerUnit, $deliveryAddress, $priceTier, $override, $method, $cashAccount, $lines, $gross, $invoiceDiscount, $total, $requestId, $tendered, $changeGiven, $splitPayments, $walkInName, $walkInPhone): SalesOrder {
                 $order = SalesOrder::create([
                     'operating_unit_id' => $unit->id,
                     'order_number' => $this->documentNumbers->next(DocumentNumberService::SALE),
@@ -227,6 +230,8 @@ final class SaleCheckoutService
                     'buyer_unit_id' => $buyerUnit?->id,
                     'walk_in_name' => $walkInName !== null && $walkInName !== '' ? $walkInName : null,
                     'walk_in_phone' => $walkInPhone !== null && $walkInPhone !== '' ? $walkInPhone : null,
+                    'delivery_address_id' => $deliveryAddress?->id,
+                    'delivery_address' => $deliveryAddress?->snapshot(),
                     'channel' => 'pos',
                     'price_tier' => $priceTier,
                     'status' => SalesOrderStatus::Open,
@@ -950,6 +955,28 @@ final class SaleCheckoutService
         }
 
         return [$client, null];
+    }
+
+    /**
+     * A delivery address must be one of the buying client's own addresses.
+     * The sale keeps a text snapshot of it at checkout.
+     */
+    private function resolveDeliveryAddress(?Client $client, ?string $addressId): ?ClientAddress
+    {
+        if ($addressId === null) {
+            return null;
+        }
+
+        $address = $client === null ? null : ClientAddress::query()
+            ->where('client_id', $client->id)
+            ->whereKey($addressId)
+            ->first();
+
+        if ($address === null) {
+            throw new SalesRuleException('The delivery address must be one of the client\'s addresses.', 'DELIVERY_ADDRESS_INVALID');
+        }
+
+        return $address;
     }
 
     /**

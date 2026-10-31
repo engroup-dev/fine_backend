@@ -11,9 +11,11 @@ use App\Http\Controllers\Controller;
 use App\Http\Requests\v1\StoreClientRequest;
 use App\Http\Resources\v1\ClientResource;
 use App\Models\Client;
+use App\Models\ClientCreditLimitChange;
 use App\Models\Entity;
 use App\Models\Scopes\OperatingUnitScope;
 use App\Rules\LeafAccount;
+use App\Services\ClientSummaryService;
 use App\Services\CoaLinkService;
 use App\Services\EntityService;
 use App\Support\CurrentUnitContext;
@@ -151,6 +153,7 @@ final class ClientController extends Controller
             'address' => 'nullable|string|max:500',
             'operating_unit_id' => 'sometimes|required|uuid|exists:operating_units,id',
             'credit_limit' => 'sometimes|numeric|min:0',
+            'credit_limit_reason' => 'nullable|string|max:500',
             'payment_terms_days' => 'sometimes|integer|min:0',
             'account_id' => ['nullable', 'uuid', 'exists:accounts,id', new LeafAccount(
                 requireActive: true,
@@ -186,7 +189,21 @@ final class ClientController extends Controller
             );
             $data['account_id'] = $accountId;
 
+            $oldLimit = round((float) $client->credit_limit, 4);
+
             $client->update($data);
+
+            // Every credit limit change is logged with who made it and why.
+            $newLimit = round((float) $client->credit_limit, 4);
+            if (abs($newLimit - $oldLimit) > 0.00001) {
+                ClientCreditLimitChange::create([
+                    'client_id' => $client->id,
+                    'old_limit' => $oldLimit,
+                    'new_limit' => $newLimit,
+                    'reason' => $request->input('credit_limit_reason'),
+                    'changed_by' => $request->user()?->id,
+                ]);
+            }
 
             if ($client->entity) {
                 $entityData = [];
@@ -225,6 +242,41 @@ final class ClientController extends Controller
         });
 
         return new ClientResource($client);
+    }
+
+    /**
+     * The client card's money summary: ledger aging and overdue, the last
+     * collection and the sales still open.
+     */
+    public function summary(string $id, ClientSummaryService $summaryService): JsonResponse
+    {
+        $client = Client::findOrFail($id);
+
+        return response()->json(['data' => $summaryService->summary($client)]);
+    }
+
+    /**
+     * The client's credit limit history, newest first.
+     */
+    public function creditLimitChanges(string $id): JsonResponse
+    {
+        $client = Client::findOrFail($id);
+
+        $changes = $client->creditLimitChanges()
+            ->with('changedBy:id,name')
+            ->orderByDesc('created_at')
+            ->orderByDesc('id')
+            ->get()
+            ->map(fn (ClientCreditLimitChange $change): array => [
+                'id' => $change->id,
+                'old_limit' => (float) $change->old_limit,
+                'new_limit' => (float) $change->new_limit,
+                'reason' => $change->reason,
+                'changed_by' => $change->changedBy ? ['id' => $change->changedBy->id, 'name' => $change->changedBy->name] : null,
+                'created_at' => $change->created_at?->toIso8601String(),
+            ]);
+
+        return response()->json(['data' => $changes]);
     }
 
     /**
