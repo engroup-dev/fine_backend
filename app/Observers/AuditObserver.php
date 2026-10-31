@@ -61,8 +61,10 @@ final class AuditObserver
     }
 
     /**
-     * Never write a model's hidden attributes (password hashes, tokens) to the log:
-     * the key stays, so a password change is still on record, but its value doesn't.
+     * Never write a model's hidden attributes (password hashes, tokens, the company
+     * logo) to the log: the key stays, so a change is still on record, but its value
+     * doesn't. A null stays null (it leaks nothing), so the log still tells a value
+     * being set for the first time or cleared apart from one being replaced.
      *
      * @param  array<string, mixed>  $values
      * @return array<string, mixed>
@@ -70,7 +72,7 @@ final class AuditObserver
     private function redact(Model $model, array $values): array
     {
         foreach ($model->getHidden() as $key) {
-            if (array_key_exists($key, $values)) {
+            if (array_key_exists($key, $values) && $values[$key] !== null) {
                 $values[$key] = self::REDACTED;
             }
         }

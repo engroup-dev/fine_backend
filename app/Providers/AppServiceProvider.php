@@ -14,6 +14,7 @@ use App\Models\Client;
 use App\Models\ClientAddress;
 use App\Models\ClientCreditLimitChange;
 use App\Models\ClientGroup;
+use App\Models\Company;
 use App\Models\CutterWorkOrder;
 use App\Models\Employee;
 use App\Models\EmployeeAdjustment;
@@ -96,6 +97,7 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         User::observe(AuditObserver::class);
+        Company::observe(AuditObserver::class);
         OperatingUnit::observe(AuditObserver::class);
         Warehouse::observe(AuditObserver::class);
         Role::observe(AuditObserver::class);

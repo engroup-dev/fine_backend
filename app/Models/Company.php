@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Models;
 
+use App\Models\Traits\Auditable;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -11,7 +12,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 final class Company extends Model
 {
-    use HasFactory, HasUuids;
+    use Auditable, HasFactory, HasUuids;
 
     protected $fillable = [
         'name',
@@ -25,7 +26,26 @@ final class Company extends Model
         'advance_max_deduction_pct',
         'monthly_standard_hours',
         'overtime_multiplier',
+        // W6-02: company profile (print headers and receipts).
+        'legal_name',
+        'tax_number',
+        'commercial_register',
+        'address',
+        'phone',
+        'email',
+        'logo',
+        'receipt_footer',
+        'invoice_terms',
     ];
+
+    /**
+     * W6-02: the logo (an image data URL of up to 200 KB) is never serialized
+     * implicitly, and the audit log records that it changed, not its bytes
+     * (AuditObserver redacts hidden attributes). CompanyController returns it.
+     *
+     * @var list<string>
+     */
+    protected $hidden = ['logo'];
 
     protected $casts = [
         'overhead_absorption_enabled' => 'boolean',

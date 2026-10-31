@@ -16,6 +16,7 @@ use App\Http\Controllers\Api\v1\ChequeController;
 use App\Http\Controllers\Api\v1\ClientAddressController;
 use App\Http\Controllers\Api\v1\ClientController;
 use App\Http\Controllers\Api\v1\ClientGroupController;
+use App\Http\Controllers\Api\v1\CompanyController;
 use App\Http\Controllers\Api\v1\CreditApprovalController;
 use App\Http\Controllers\Api\v1\CutterWorkOrderController;
 use App\Http\Controllers\Api\v1\DashboardController;
@@ -114,6 +115,11 @@ Route::prefix('v1')->group(function () {
 
             // Operating Units index (accessible to any authenticated user to view accessible units)
             Route::get('/operating-units', [OperatingUnitController::class, 'index'])->name('operating-units.index');
+
+            // W6-02: company profile for print headers — any signed-in user reads; a company-wide owner or admin
+            // changes it (audited; the unit-less role is checked in the controller).
+            Route::get('/company', [CompanyController::class, 'show']);
+            Route::put('/company', [CompanyController::class, 'update'])->middleware('require.role:owner,admin');
 
             // W6-01: audit log viewer — owner and admin.
             Route::middleware('require.role:owner,admin')->group(function () {
