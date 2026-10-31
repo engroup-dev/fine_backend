@@ -26,6 +26,7 @@ final class DebtorStatementController extends Controller
     {
         $validated = $request->validated();
         $clientIds = array_values($validated['client_ids'] ?? []);
+        $clientGroupId = $validated['client_group_id'] ?? null;
 
         $filters = new DebtorStatementFilters(
             from: Carbon::parse($validated['from'])->toDateString(),
@@ -35,8 +36,9 @@ final class DebtorStatementController extends Controller
             statuses: array_values($validated['statuses'] ?? []),
             city: $validated['city'] ?? null,
             minBalance: isset($validated['min_balance']) ? (float) $validated['min_balance'] : null,
-            // Selecting specific clients excludes the unassigned bucket.
-            includeUnassigned: $clientIds === [] && $request->boolean('include_unassigned'),
+            // Selecting specific clients or a client group excludes the unassigned bucket.
+            includeUnassigned: $clientIds === [] && $clientGroupId === null && $request->boolean('include_unassigned'),
+            clientGroupId: $clientGroupId,
         );
 
         return response()->json($this->ledger->debtorStatements($filters));

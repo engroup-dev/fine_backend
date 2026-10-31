@@ -12,6 +12,7 @@ use App\Http\Requests\v1\StoreClientRequest;
 use App\Http\Resources\v1\ClientResource;
 use App\Models\Client;
 use App\Models\ClientCreditLimitChange;
+use App\Models\ClientGroup;
 use App\Models\Entity;
 use App\Models\Scopes\OperatingUnitScope;
 use App\Rules\LeafAccount;
@@ -26,6 +27,7 @@ use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 final class ClientController extends Controller
 {
@@ -34,7 +36,7 @@ final class ClientController extends Controller
      */
     public function index(Request $request): AnonymousResourceCollection
     {
-        $query = Client::with(['entity.primaryContact', 'operatingUnit', 'account']);
+        $query = Client::with(['entity.primaryContact', 'operatingUnit', 'account', 'clientGroup']);
 
         // Unit drill-down is only honoured for company-wide roles; a unit
         // caller's listing stays inside their ambient unit scope.
@@ -45,6 +47,10 @@ final class ClientController extends Controller
 
         if ($request->has('status')) {
             $query->where('status', $request->query('status'));
+        }
+
+        if ($request->filled('client_group_id')) {
+            $query->where('client_group_id', $request->query('client_group_id'));
         }
 
         return ClientResource::collection($query->latest()->get());
@@ -112,16 +118,22 @@ final class ClientController extends Controller
                 $request->user()?->company_id
             );
 
+            // W5-06: whatever the caller leaves out comes from the client's group.
+            $group = $request->filled('client_group_id')
+                ? $this->lockAssignableGroup((string) $request->input('client_group_id'))
+                : null;
+
             $client = Client::create([
                 'entity_id' => $entityId,
                 'operating_unit_id' => $operatingUnitId,
-                'credit_limit' => $request->input('credit_limit', 0),
-                'payment_terms_days' => $request->input('payment_terms_days', 30),
+                'client_group_id' => $group?->id,
+                'credit_limit' => $request->input('credit_limit') ?? $group?->default_credit_limit ?? 0,
+                'payment_terms_days' => $request->input('payment_terms_days') ?? $group?->default_payment_terms_days ?? 30,
                 'account_id' => $accountId,
                 'status' => $request->input('status', 'active'),
             ]);
 
-            return $client->load(['entity.primaryContact', 'operatingUnit', 'account']);
+            return $client->load(['entity.primaryContact', 'operatingUnit', 'account', 'clientGroup']);
         });
 
         return (new ClientResource($client))
@@ -134,7 +146,7 @@ final class ClientController extends Controller
      */
     public function show(string $id): ClientResource
     {
-        $client = Client::with(['entity.primaryContact', 'operatingUnit', 'account'])->findOrFail($id);
+        $client = Client::with(['entity.primaryContact', 'operatingUnit', 'account', 'clientGroup'])->findOrFail($id);
 
         return new ClientResource($client);
     }
@@ -155,6 +167,8 @@ final class ClientController extends Controller
             'credit_limit' => 'sometimes|numeric|min:0',
             'credit_limit_reason' => 'nullable|string|max:500',
             'payment_terms_days' => 'sometimes|integer|min:0',
+            // Moving a client to another group keeps its own limit and terms.
+            'client_group_id' => ['sometimes', 'nullable', 'uuid', Rule::exists('client_groups', 'id')->whereNull('deleted_at')],
             'account_id' => ['nullable', 'uuid', 'exists:accounts,id', new LeafAccount(
                 requireActive: true,
                 unchangedValue: Client::query()->whereKey($id)->value('account_id'),
@@ -172,6 +186,11 @@ final class ClientController extends Controller
         $client = DB::transaction(function () use ($request, $id, $coaLinkService) {
             $client = Client::with('entity')->findOrFail($id);
 
+            // A group being removed at the same moment cannot be assigned.
+            if ($request->filled('client_group_id') && $request->input('client_group_id') !== $client->client_group_id) {
+                $this->lockAssignableGroup((string) $request->input('client_group_id'));
+            }
+
             $accountId = $client->account_id;
             if ($request->has('coa_action') || $request->has('account_id')) {
                 $accountId = $coaLinkService->resolveOrProvisionAccount(
@@ -182,6 +201,7 @@ final class ClientController extends Controller
 
             $data = $request->only(
                 'operating_unit_id',
+                'client_group_id',
                 'credit_limit',
                 'payment_terms_days',
                 'status',
@@ -238,10 +258,29 @@ final class ClientController extends Controller
                 }
             }
 
-            return $client->load(['entity.primaryContact', 'operatingUnit', 'account']);
+            return $client->load(['entity.primaryContact', 'operatingUnit', 'account', 'clientGroup']);
         });
 
         return new ClientResource($client);
+    }
+
+    /**
+     * W5-06: re-reads the group under a row lock inside the caller's
+     * transaction, so it cannot be removed while a client joins it (the
+     * removal locks the same row and counts the group's clients). The
+     * validator's exists check runs before the transaction and is not enough.
+     */
+    private function lockAssignableGroup(string $groupId): ClientGroup
+    {
+        $group = ClientGroup::query()->lockForUpdate()->find($groupId);
+
+        if ($group === null) {
+            throw ValidationException::withMessages([
+                'client_group_id' => 'The selected client group no longer exists.',
+            ]);
+        }
+
+        return $group;
     }
 
     /**

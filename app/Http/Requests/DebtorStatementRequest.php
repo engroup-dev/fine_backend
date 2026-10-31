@@ -30,6 +30,7 @@ final class DebtorStatementRequest extends FormRequest
             'city' => ['sometimes', 'nullable', 'string', 'max:100'],
             'min_balance' => ['sometimes', 'nullable', 'numeric', 'min:0'],
             'include_unassigned' => ['sometimes', 'boolean'],
+            'client_group_id' => ['sometimes', 'nullable', 'uuid'],
             'company_wide' => ['sometimes', 'boolean'],
             'operating_unit_id' => ['sometimes', 'nullable', 'uuid'],
         ];

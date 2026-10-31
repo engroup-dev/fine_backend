@@ -22,10 +22,11 @@ final class PartnerReportService
     /**
      * Cross-client balances and aging summary, read from the receivables ledger.
      * Every client in scope is listed, including clients with no ledger lines.
+     * A client group narrows the list to that group's clients (W5-06).
      *
      * @return array<string, mixed>
      */
-    public function clientBalances(?string $asOf = null, ?string $operatingUnitId = null): array
+    public function clientBalances(?string $asOf = null, ?string $operatingUnitId = null, ?string $clientGroupId = null): array
     {
         $asOf ??= now()->toDateString();
 
@@ -36,13 +37,16 @@ final class PartnerReportService
         if ($operatingUnitId !== null) {
             $query->where('operating_unit_id', $operatingUnitId);
         }
+        if ($clientGroupId !== null) {
+            $query->where('client_group_id', $clientGroupId);
+        }
 
         $clients = $query->get();
         // Company-wide reads every client, so skip the (possibly huge) id list.
         $balances = $this->receivables->balances(
             $asOf,
             $operatingUnitId,
-            $operatingUnitId === null ? null : $clients->modelKeys(),
+            $operatingUnitId === null && $clientGroupId === null ? null : $clients->modelKeys(),
         );
 
         $rows = [];
@@ -98,6 +102,7 @@ final class PartnerReportService
             'type' => 'clients',
             'as_of' => $asOf,
             'operating_unit_id' => $operatingUnitId,
+            'client_group_id' => $clientGroupId,
             'summary' => [
                 'total_receivables' => round($totalReceivables, 4),
                 'total_credits_or_advances' => round($totalCreditsOrAdvances, 4),

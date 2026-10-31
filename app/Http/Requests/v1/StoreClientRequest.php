@@ -27,6 +27,9 @@ final class StoreClientRequest extends FormRequest
             // Optional: a POS quick-add omits it and the client joins the
             // caller's current unit.
             'operating_unit_id' => ['nullable', 'uuid', 'exists:operating_units,id'],
+            // W5-06: a new client takes its group's credit limit and terms
+            // for whichever of the two the caller leaves out.
+            'client_group_id' => ['nullable', 'uuid', Rule::exists('client_groups', 'id')->whereNull('deleted_at')],
             'credit_limit' => ['nullable', 'numeric', 'min:0'],
             'payment_terms_days' => ['nullable', 'integer', 'min:0'],
             'account_id' => ['nullable', 'uuid', 'exists:accounts,id', new LeafAccount(requireActive: true)],

@@ -21,6 +21,7 @@ final class Client extends Model
     protected $fillable = [
         'entity_id',
         'operating_unit_id',
+        'client_group_id',
         'credit_limit',
         'current_balance',
         'payment_terms_days',
@@ -48,6 +49,15 @@ final class Client extends Model
     public function operatingUnit(): BelongsTo
     {
         return $this->belongsTo(OperatingUnit::class);
+    }
+
+    /**
+     * W5-06: reads trashed groups too, so a client keeps showing its group's
+     * name even if the group row is soft-deleted.
+     */
+    public function clientGroup(): BelongsTo
+    {
+        return $this->belongsTo(ClientGroup::class)->withTrashed();
     }
 
     public function account(): BelongsTo

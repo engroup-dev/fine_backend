@@ -10,6 +10,10 @@ use App\Models\SalesReturnLine;
 final class SalesMarginReportService
 {
     /**
+     * group_by=client_group groups by the client's current group (W5-06);
+     * walk-in sales and clients with no group fall under "no_group". A
+     * client_group_id narrows the report to that group's clients' sales.
+     *
      * @return array{
      *     from: string|null,
      *     to: string|null,
@@ -38,6 +42,7 @@ final class SalesMarginReportService
         ?string $to = null,
         string $groupBy = 'item',
         ?string $operatingUnitId = null,
+        ?string $clientGroupId = null,
     ): array {
         $query = SalesOrderLine::query()
             ->join('sales_orders', 'sales_orders.id', '=', 'sales_order_lines.sales_order_id')
@@ -46,6 +51,7 @@ final class SalesMarginReportService
             ->leftJoin('item_categories', 'item_categories.id', '=', 'inventory_items.category_id')
             ->leftJoin('clients', 'clients.id', '=', 'sales_orders.client_id')
             ->leftJoin('entities', 'entities.id', '=', 'clients.entity_id')
+            ->leftJoin('client_groups', 'client_groups.id', '=', 'clients.client_group_id')
             ->leftJoin('bundles', 'bundles.id', '=', 'sales_order_lines.bundle_id')
             ->whereNull('sales_orders.deleted_at')
             ->whereNotIn('sales_orders.status', ['pending_approval', 'rejected', 'draft'])
@@ -64,6 +70,10 @@ final class SalesMarginReportService
 
         if ($operatingUnitId !== null) {
             $query->where('sales_orders.operating_unit_id', $operatingUnitId);
+        }
+
+        if ($clientGroupId !== null) {
+            $query->where('clients.client_group_id', $clientGroupId);
         }
 
         $lines = $query->select([
@@ -87,6 +97,8 @@ final class SalesMarginReportService
             'sales_orders.invoice_discount',
             'sales_orders.client_id',
             'entities.name as client_name',
+            'client_groups.id as client_group_id',
+            'client_groups.name as client_group_name',
             'bundles.id as b_id',
             'bundles.name as bundle_name',
         ])->get();
@@ -153,6 +165,10 @@ final class SalesMarginReportService
                 'client' => [
                     $line->client_id ? (string) $line->client_id : 'walk_in',
                     $line->client_name ?? 'عميل نقدي',
+                ],
+                'client_group' => [
+                    $line->client_group_id ? (string) $line->client_group_id : 'no_group',
+                    $line->client_group_name ?? 'بدون مجموعة',
                 ],
                 'sale' => [
                     (string) $line->sales_order_id,

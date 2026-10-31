@@ -25,6 +25,7 @@ final class PartnerReportController extends Controller
         $validated = $request->validate([
             'type' => 'required|in:clients,suppliers',
             'as_of' => 'sometimes|nullable|date',
+            'client_group_id' => 'sometimes|nullable|uuid',
             'operating_unit_id' => 'sometimes|nullable|uuid',
             'company_wide' => 'sometimes|boolean',
         ]);
@@ -35,6 +36,7 @@ final class PartnerReportController extends Controller
             return response()->json($this->reports->clientBalances(
                 $request->query('as_of'),
                 $unitId,
+                $validated['client_group_id'] ?? null,
             ));
         }
 

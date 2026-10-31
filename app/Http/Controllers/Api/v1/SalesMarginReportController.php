@@ -25,7 +25,8 @@ final class SalesMarginReportController extends Controller
         $request->validate([
             'from' => 'sometimes|nullable|date',
             'to' => 'sometimes|nullable|date',
-            'group_by' => 'sometimes|nullable|string|in:item,category,client,sale',
+            'group_by' => 'sometimes|nullable|string|in:item,category,client,client_group,sale',
+            'client_group_id' => 'sometimes|nullable|uuid',
         ]);
 
         return response()->json($this->reports->salesMargin(
@@ -33,6 +34,7 @@ final class SalesMarginReportController extends Controller
             $request->query('to'),
             $request->query('group_by') ?: 'item',
             $this->resolveUnitId($request),
+            $request->query('client_group_id') ?: null,
         ));
     }
 

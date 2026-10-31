@@ -47,15 +47,33 @@ final class ReceivablesLedgerService
         $subtreeIds = ReceivableAccounts::subtreeIds();
         $asOf = Carbon::parse($filters->to)->startOfDay();
 
-        $partyFilter = function (Builder $query) use ($filters): void {
-            if ($filters->clientIds !== []) {
-                $query->where(function (Builder $inner) use ($filters): void {
-                    $inner->whereIn('journal_lines.client_id', $filters->clientIds);
-                    if ($filters->includeUnassigned) {
+        // A client group narrows the ledger reads to its clients in SQL (and,
+        // like picking clients, leaves out the unassigned bucket).
+        $partyIds = $filters->clientIds;
+        $includeUnassigned = $filters->includeUnassigned && $filters->clientGroupId === null;
+        if ($filters->clientGroupId !== null) {
+            $groupClientIds = Client::withoutGlobalScopes()
+                ->where('client_group_id', $filters->clientGroupId)
+                ->pluck('id')
+                ->all();
+            $partyIds = $partyIds === []
+                ? $groupClientIds
+                : array_values(array_intersect($partyIds, $groupClientIds));
+
+            if ($partyIds === []) {
+                return $this->emptyDebtorStatements($filters);
+            }
+        }
+
+        $partyFilter = function (Builder $query) use ($partyIds, $includeUnassigned): void {
+            if ($partyIds !== []) {
+                $query->where(function (Builder $inner) use ($partyIds, $includeUnassigned): void {
+                    $inner->whereIn('journal_lines.client_id', $partyIds);
+                    if ($includeUnassigned) {
                         $inner->orWhereNull('journal_lines.client_id');
                     }
                 });
-            } elseif (! $filters->includeUnassigned) {
+            } elseif (! $includeUnassigned) {
                 $query->whereNotNull('journal_lines.client_id');
             }
         };
@@ -133,7 +151,7 @@ final class ReceivablesLedgerService
             <=> [$a['closing_balance'], $b['client']['name']]);
 
         $unassigned = null;
-        if ($filters->includeUnassigned && $keys->contains(self::UNASSIGNED)) {
+        if ($includeUnassigned && $keys->contains(self::UNASSIGNED)) {
             $section = $this->section(
                 $openings->get(self::UNASSIGNED),
                 $movements->get(self::UNASSIGNED, collect()),
@@ -153,6 +171,22 @@ final class ReceivablesLedgerService
             'debtors' => $debtors,
             'unassigned' => $unassigned,
             'totals' => $this->totals($debtors),
+        ];
+    }
+
+    /**
+     * The report for a filter that matches no client (e.g. an empty group).
+     *
+     * @return array{period: array{from: string, to: string}, generated_at: string, debtors: list<array<string, mixed>>, unassigned: null, totals: array{opening: float, debit: float, credit: float, closing: float, debtors_count: int, aging: array<string, float>, overdue: float}}
+     */
+    private function emptyDebtorStatements(DebtorStatementFilters $filters): array
+    {
+        return [
+            'period' => ['from' => $filters->from, 'to' => $filters->to],
+            'generated_at' => now()->toIso8601String(),
+            'debtors' => [],
+            'unassigned' => null,
+            'totals' => $this->totals([]),
         ];
     }
 
@@ -374,6 +408,10 @@ final class ReceivablesLedgerService
     private function matchesClientFilters(Client $client, DebtorStatementFilters $filters): bool
     {
         if ($filters->statuses !== [] && ! in_array($client->status?->value ?? 'active', $filters->statuses, true)) {
+            return false;
+        }
+
+        if ($filters->clientGroupId !== null && $client->client_group_id !== $filters->clientGroupId) {
             return false;
         }
 

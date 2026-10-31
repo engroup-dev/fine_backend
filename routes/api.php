@@ -15,6 +15,7 @@ use App\Http\Controllers\Api\v1\CashAccountController;
 use App\Http\Controllers\Api\v1\ChequeController;
 use App\Http\Controllers\Api\v1\ClientAddressController;
 use App\Http\Controllers\Api\v1\ClientController;
+use App\Http\Controllers\Api\v1\ClientGroupController;
 use App\Http\Controllers\Api\v1\CreditApprovalController;
 use App\Http\Controllers\Api\v1\CutterWorkOrderController;
 use App\Http\Controllers\Api\v1\DashboardController;
@@ -535,6 +536,15 @@ Route::prefix('v1')->group(function () {
                     Route::post('/clients/{clientId}/addresses', [ClientAddressController::class, 'store'])->whereUuid('clientId');
                     Route::put('/clients/{clientId}/addresses/{addressId}', [ClientAddressController::class, 'update'])->whereUuid(['clientId', 'addressId']);
                     Route::delete('/clients/{clientId}/addresses/{addressId}', [ClientAddressController::class, 'destroy'])->whereUuid(['clientId', 'addressId']);
+                });
+
+                // W5-06: client groups (company-wide); everyone here reads, managers write
+                // (and only from a company-wide assignment, checked in the controller).
+                Route::get('/client-groups', [ClientGroupController::class, 'index'])->middleware('require.module:view-clients,edit-clients');
+                Route::middleware(['require.role:'.implode(',', ClientGroupController::WRITE_ROLES), 'require.module:view-clients,edit-clients'])->group(function () {
+                    Route::post('/client-groups', [ClientGroupController::class, 'store']);
+                    Route::put('/client-groups/{id}', [ClientGroupController::class, 'update'])->whereUuid('id');
+                    Route::delete('/client-groups/{id}', [ClientGroupController::class, 'destroy'])->whereUuid('id');
                 });
             });
 

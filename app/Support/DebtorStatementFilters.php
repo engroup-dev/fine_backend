@@ -8,8 +8,8 @@ namespace App\Support;
  * Filters for the debtor statements report (كشف حساب المدينين).
  *
  * Dates are Y-m-d strings matched against journal_entries.entry_date.
- * The unit filter applies to journal lines; status, city and minimum
- * balance apply to the client and its closing balance.
+ * The unit filter applies to journal lines; status, city, client group
+ * and minimum balance apply to the client and its closing balance.
  */
 final readonly class DebtorStatementFilters
 {
@@ -26,5 +26,6 @@ final readonly class DebtorStatementFilters
         public ?string $city = null,
         public ?float $minBalance = null,
         public bool $includeUnassigned = false,
+        public ?string $clientGroupId = null,
     ) {}
 }

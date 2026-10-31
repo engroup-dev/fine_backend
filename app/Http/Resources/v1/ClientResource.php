@@ -15,6 +15,13 @@ final class ClientResource extends JsonResource
             'id' => $this->id,
             'entity_id' => $this->entity_id,
             'operating_unit_id' => $this->operating_unit_id,
+            'client_group_id' => $this->client_group_id,
+            'client_group' => $this->whenLoaded('clientGroup', fn () => $this->clientGroup ? [
+                'id' => $this->clientGroup->id,
+                'code' => $this->clientGroup->code,
+                'name' => $this->clientGroup->name,
+                'default_price_tier' => $this->clientGroup->default_price_tier,
+            ] : null),
             'credit_limit' => $this->credit_limit,
             'current_balance' => (float) ($this->current_balance ?? 0),
             'payment_terms_days' => $this->payment_terms_days,
