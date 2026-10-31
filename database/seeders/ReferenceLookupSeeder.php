@@ -97,13 +97,16 @@ final class ReferenceLookupSeeder extends Seeder
                 ['code' => 'ALW-OT', 'name' => 'ساعات إضافية', 'fields' => ['calculation' => 'fixed', 'value' => '12'], 'notes' => 'القيمة عن كل ساعة إضافية'],
                 ['code' => 'ALW-PERF', 'name' => 'مكافأة أداء', 'fields' => ['calculation' => 'fixed', 'value' => '0']],
             ],
+            // W5-03 (HR-13): account_role routes a payroll deduction: liability
+            // credits 225, expense_reduction credits 57. DED-ADV has none (CR 1215
+            // from the advance schedule).
             'deduction-types' => [
-                ['code' => 'DED-SSF', 'name' => 'تأمين اجتماعي', 'fields' => ['calculation' => 'percentage', 'value' => '3.75'], 'notes' => 'حصة الموظف من الضمان الاجتماعي'],
-                ['code' => 'DED-TAX', 'name' => 'ضريبة دخل', 'fields' => ['calculation' => 'percentage', 'value' => '5']],
+                ['code' => 'DED-SSF', 'name' => 'تأمين اجتماعي', 'fields' => ['calculation' => 'percentage', 'value' => '3.75', 'account_role' => 'liability'], 'notes' => 'حصة الموظف من الضمان الاجتماعي'],
+                ['code' => 'DED-TAX', 'name' => 'ضريبة دخل', 'fields' => ['calculation' => 'percentage', 'value' => '5', 'account_role' => 'liability']],
                 ['code' => 'DED-ADV', 'name' => 'سلفة موظف', 'fields' => ['calculation' => 'fixed', 'value' => '0'], 'notes' => 'تُقسَّط حسب اتفاق السلفة'],
-                ['code' => 'DED-ABS', 'name' => 'خصم غياب', 'fields' => ['calculation' => 'fixed', 'value' => '0']],
-                ['code' => 'DED-LATE', 'name' => 'خصم تأخير', 'fields' => ['calculation' => 'fixed', 'value' => '0']],
-                ['code' => 'DED-PEN', 'name' => 'جزاء إداري', 'fields' => ['calculation' => 'fixed', 'value' => '0'], 'is_active' => false],
+                ['code' => 'DED-ABS', 'name' => 'خصم غياب', 'fields' => ['calculation' => 'fixed', 'value' => '0', 'account_role' => 'expense_reduction']],
+                ['code' => 'DED-LATE', 'name' => 'خصم تأخير', 'fields' => ['calculation' => 'fixed', 'value' => '0', 'account_role' => 'expense_reduction']],
+                ['code' => 'DED-PEN', 'name' => 'جزاء إداري', 'fields' => ['calculation' => 'fixed', 'value' => '0', 'account_role' => 'expense_reduction'], 'is_active' => false],
             ],
             // Warehouses and their sub-locations are real `warehouses` rows
             // (self-referencing parent_id) now, not reference-lookup seed data.

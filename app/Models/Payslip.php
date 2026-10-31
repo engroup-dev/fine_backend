@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace App\Models;
 
+use App\Enums\DeductionAccountRole;
 use App\Services\EmployeeAdvanceService;
+use App\Services\EmployeePayItemService;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -21,6 +23,8 @@ final class Payslip extends Model
         'base_pay',
         'attendance_pay',
         'labor_log_pay',
+        'additions',
+        'additions_pay',
         'gross_pay',
         'deductions',
         'net_pay',
@@ -31,6 +35,8 @@ final class Payslip extends Model
         'base_pay' => 'decimal:4',
         'attendance_pay' => 'decimal:4',
         'labor_log_pay' => 'decimal:4',
+        'additions' => 'array',
+        'additions_pay' => 'decimal:4',
         'gross_pay' => 'decimal:4',
         'deductions' => 'array',
         'net_pay' => 'decimal:4',
@@ -59,6 +65,29 @@ final class Payslip extends Model
     public function totalDeductions(): float
     {
         return round(array_sum(array_column($this->deductions ?? [], 'amount')), 4);
+    }
+
+    /**
+     * W5-03 (HR-13): the deductions credited to each account role, advance
+     * recovery left out (it credits 1215). A line without a role (manual lines
+     * from before W5-03) is a withholding (CR 225), as it always was.
+     *
+     * @return array{liability: float, expense_reduction: float}
+     */
+    public function deductionsByRole(): array
+    {
+        $totals = [DeductionAccountRole::Liability->value => 0.0, DeductionAccountRole::ExpenseReduction->value => 0.0];
+
+        foreach ($this->deductions ?? [] as $line) {
+            if (! is_array($line) || EmployeeAdvanceService::isAdvanceLine($line)) {
+                continue;
+            }
+
+            $role = EmployeePayItemService::roleOfLine($line)->value;
+            $totals[$role] = round($totals[$role] + round((float) ($line['amount'] ?? 0), 4), 4);
+        }
+
+        return $totals;
     }
 
     /**

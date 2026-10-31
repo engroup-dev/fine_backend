@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace App\Services;
 
+use App\Enums\DeductionAccountRole;
+use App\Enums\EmployeeAdjustmentStatus;
 use App\Enums\PayrollRunStatus;
 use App\Enums\PayType;
 use App\Exceptions\InvalidStateTransitionException;
@@ -11,6 +13,7 @@ use App\Exceptions\LedgerRuleException;
 use App\Models\Attendance;
 use App\Models\Company;
 use App\Models\Employee;
+use App\Models\EmployeeAdjustment;
 use App\Models\LaborRoleRate;
 use App\Models\PayrollRun;
 use App\Models\Payslip;
@@ -44,6 +47,7 @@ final class PayrollService
         private readonly AccountingService $accountingService,
         private readonly EmployeeCompensationService $compensations,
         private readonly EmployeeAdvanceService $advances,
+        private readonly EmployeePayItemService $payItems,
     ) {}
 
     public function open(string $period, ?string $userId = null): PayrollRun
@@ -76,8 +80,19 @@ final class PayrollService
      * Recalculating while still in Calculated wipes and regenerates the
      * payslips.
      *
+     * HR-13: standing pay items and approved one-off adjustments are added:
+     * gross = base + attendance + additions, and their deductions become
+     * locked lines. Percentages apply to base + attendance pay. An employee
+     * who earned nothing in the period (base + attendance = 0) gets no payslip
+     * and no allowances. Deductions above gross are refused
+     * (PAYROLL_DEDUCTIONS_EXCEED_GROSS, listing every such employee), never
+     * cut silently. An approved one-off adjustment of the period for an
+     * employee who gets no payslip refuses the calculation too
+     * (PAYROLL_ADJUSTMENT_UNPAID): it would otherwise never be paid.
+     *
      * HR-12: due advance installments become locked deduction lines, capped
-     * by the company's deduction percentage of net pay.
+     * by the company's deduction percentage of net pay after the HR-13
+     * deductions (they count like manual deductions).
      */
     public function calculate(PayrollRun $run): PayrollRun
     {
@@ -97,6 +112,8 @@ final class PayrollService
 
             $totalGross = 0.0;
             $totalDeductions = 0.0;
+            $paidEmployeeIds = [];
+            $overdrawn = [];
 
             foreach ($employees as $employee) {
                 // HR-11: pay terms resolve by date; a mid-month change splits the period.
@@ -105,13 +122,30 @@ final class PayrollService
                 $basePay = $this->monthlyBasePay($employee, $segments, $start, $end);
                 $attendancePay = $this->attendancePay($employee, $segments, $start, $end);
 
-                $gross = round($basePay + $attendancePay, 4);
+                $earned = round($basePay + $attendancePay, 4);
 
-                if ($gross <= 0.0) {
+                if ($earned <= 0.0) {
                     continue;
                 }
 
-                $deductions = $this->advances->dueDeductions($employee, $run, $gross);
+                // HR-13: standing items and the period's approved adjustments.
+                $lines = $this->payItems->linesFor($employee, $run->period, $earned);
+                $additionsPay = round(array_sum(array_column($lines['additions'], 'amount')), 4);
+                $gross = round($earned + $additionsPay, 4);
+                $itemDeductions = round(array_sum(array_column($lines['deductions'], 'amount')), 4);
+
+                if ($itemDeductions - $gross > 0.00001) {
+                    $overdrawn[] = ['employee_id' => $employee->id, 'gross_pay' => $gross, 'deductions' => $itemDeductions];
+
+                    continue;
+                }
+
+                $paidEmployeeIds[] = $employee->id;
+
+                $deductions = [
+                    ...$lines['deductions'],
+                    ...$this->advances->dueDeductions($employee, $run, round($gross - $itemDeductions, 4)),
+                ];
                 $deductionTotal = round(array_sum(array_column($deductions, 'amount')), 4);
 
                 Payslip::create([
@@ -121,6 +155,8 @@ final class PayrollService
                     'base_pay' => $basePay,
                     'attendance_pay' => $attendancePay,
                     'labor_log_pay' => 0,
+                    'additions' => $lines['additions'],
+                    'additions_pay' => $additionsPay,
                     'gross_pay' => $gross,
                     'deductions' => $deductions,
                     'net_pay' => round($gross - $deductionTotal, 4),
@@ -129,6 +165,18 @@ final class PayrollService
                 $totalGross = round($totalGross + $gross, 4);
                 $totalDeductions = round($totalDeductions + $deductionTotal, 4);
             }
+
+            if ($overdrawn !== []) {
+                $first = $overdrawn[0];
+
+                throw new LedgerRuleException(
+                    'The standing and one-off deductions of '.count($overdrawn)." employee(s) exceed their gross pay for {$run->period} (first: {$first['employee_id']}, {$first['deductions']} against {$first['gross_pay']}); the payslip would go negative. Remove or lower the one-off deduction, or for a standing item end it on the last day of the previous month and add it again from the next month (or deactivate it for this calculation), then recalculate.",
+                    'PAYROLL_DEDUCTIONS_EXCEED_GROSS',
+                    [...$first, 'employees' => $overdrawn],
+                );
+            }
+
+            $this->assertAdjustmentsPaid($run, $paidEmployeeIds);
 
             $run->update([
                 'status' => PayrollRunStatus::Calculated,
@@ -197,6 +245,11 @@ final class PayrollService
      * (recapAdvanceLines). A manual line typed as an advance recovery is
      * refused (ADVANCE_DEDUCTION_MANUAL).
      *
+     * HR-13: the locked standing/one-off deduction lines are kept likewise and
+     * count like manual deductions for the advance cap. A manual line takes the
+     * account role of the deduction type it names (`liability` → 225,
+     * `expense_reduction` → 57); any other type is a withholding (225).
+     *
      * @param  list<array{type: string, amount: float}>  $deductions
      */
     public function setDeductions(Payslip $payslip, array $deductions): Payslip
@@ -239,6 +292,11 @@ final class PayrollService
                     throw new InvalidArgumentException('A deduction cannot be negative.');
                 }
             }
+
+            $manual = $this->payItems->withAccountRoles(array_map(
+                fn (array $line) => ['type' => $line['type'], 'amount' => $line['amount']],
+                $manual,
+            ));
 
             $locked = $this->recapAdvanceLines($payslip, $run, $locked, $manual);
             $deductions = [...$locked, ...$manual];
@@ -318,6 +376,12 @@ final class PayrollService
                 );
             }
 
+            // HR-13: the run is frozen from here, so an approved adjustment of
+            // the period whose employee has no payslip would never be paid.
+            if ($target === PayrollRunStatus::PendingApproval) {
+                $this->assertAdjustmentsPaid($run, $run->payslips()->pluck('employee_id')->all());
+            }
+
             if ($target === PayrollRunStatus::Approved) {
                 $run->approved_by_user_id = $userId;
             }
@@ -333,6 +397,35 @@ final class PayrollService
 
             return $run->refresh();
         });
+    }
+
+    /**
+     * HR-13: every approved one-off adjustment of the run's period must
+     * belong to an employee with a payslip in it (PAYROLL_ADJUSTMENT_UNPAID).
+     *
+     * @param  list<string>  $paidEmployeeIds
+     *
+     * @throws LedgerRuleException
+     */
+    private function assertAdjustmentsPaid(PayrollRun $run, array $paidEmployeeIds): void
+    {
+        $unpaid = EmployeeAdjustment::query()
+            ->where('period', $run->period)
+            ->where('status', EmployeeAdjustmentStatus::Approved)
+            ->whereNotIn('employee_id', $paidEmployeeIds)
+            ->orderBy('created_at')
+            ->get(['id', 'employee_id']);
+
+        if ($unpaid->isNotEmpty()) {
+            throw new LedgerRuleException(
+                "Approved adjustments for {$run->period} belong to employees who get no payslip this period (terminated, piece rate, or nothing earned); they would never be paid or deducted. Remove them or enter them for a period the employee is paid in, then recalculate.",
+                'PAYROLL_ADJUSTMENT_UNPAID',
+                [
+                    'employee_id' => $unpaid->first()->employee_id,
+                    'adjustment_ids' => $unpaid->pluck('id')->all(),
+                ],
+            );
+        }
     }
 
     private function guardTransition(PayrollRun $run, PayrollRunStatus $target): void
@@ -405,9 +498,11 @@ final class PayrollService
      * HR-08 / phase-08 §8.4 PayrollRun.Posted, per unit:
      *
      * 1. ACCRUAL (dated min(end of period, today)):
-     *   DR 57      Wage Expense               (gross pay)
+     *   DR 57      Wage Expense               (base + attendance pay)
+     *   DR 57      Wage Expense               (HR-13 additions: allowances, bonuses)
      *   CR 226     Wages Payable              (net pay payable)
-     *   CR 225     Payroll deductions payable (withheld)
+     *   CR 225     Payroll deductions payable (withheld: `liability` deductions and untyped manual lines)
+     *   CR 57      Wage Expense               (HR-13 `expense_reduction` deductions: absence, lateness, penalties)
      *   CR 1215    Employee advances, per employee (HR-12 installments)
      *
      * 2. PAYMENT (dated today, when total net > 0):
@@ -423,10 +518,11 @@ final class PayrollService
         $totalNet = 0.0;
 
         foreach ($payslips->groupBy('operating_unit_id') as $unitId => $unitSlips) {
-            $expensePortion = round((float) $unitSlips->sum('gross_pay'), 4);
+            $additions = round((float) $unitSlips->sum('additions_pay'), 4);
+            $expensePortion = round((float) $unitSlips->sum('gross_pay') - $additions, 4);
             $net = round((float) $unitSlips->sum('net_pay'), 4);
-            $advanceDeductions = round((float) $unitSlips->sum(fn (Payslip $p) => $p->advanceDeductions()), 4);
-            $deductions = round((float) $unitSlips->sum(fn (Payslip $p) => $p->totalDeductions()) - $advanceDeductions, 4);
+            $deductions = round((float) $unitSlips->sum(fn (Payslip $p) => $p->deductionsByRole()[DeductionAccountRole::Liability->value]), 4);
+            $expenseReductions = round((float) $unitSlips->sum(fn (Payslip $p) => $p->deductionsByRole()[DeductionAccountRole::ExpenseReduction->value]), 4);
             $totalNet = round($totalNet + $net, 4);
 
             if ($expensePortion > 0) {
@@ -434,6 +530,16 @@ final class PayrollService
                     'account_code' => '57', // Wage Expense
                     'debit' => $expensePortion,
                     'operating_unit_id' => $unitId,
+                ];
+            }
+
+            // HR-13: allowances and bonuses are wage expense too.
+            if ($additions > 0) {
+                $accrualLines[] = [
+                    'account_code' => '57',
+                    'debit' => $additions,
+                    'operating_unit_id' => $unitId,
+                    'memo' => 'allowances and bonuses',
                 ];
             }
 
@@ -451,6 +557,16 @@ final class PayrollService
                     'account_code' => self::DEDUCTIONS_PAYABLE,
                     'credit' => $deductions,
                     'operating_unit_id' => $unitId,
+                ];
+            }
+
+            // HR-13: deductions the company keeps reduce the wage expense.
+            if ($expenseReductions > 0) {
+                $accrualLines[] = [
+                    'account_code' => DeductionAccountRole::ExpenseReduction->accountCode(),
+                    'credit' => $expenseReductions,
+                    'operating_unit_id' => $unitId,
+                    'memo' => 'deductions reducing wage expense',
                 ];
             }
 

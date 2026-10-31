@@ -97,6 +97,22 @@ final class Employee extends Model
     }
 
     /**
+     * W5-03 (HR-13): standing allowances and deductions.
+     */
+    public function payItems(): HasMany
+    {
+        return $this->hasMany(EmployeePayItem::class);
+    }
+
+    /**
+     * W5-03 (HR-13): one-off rewards and deductions.
+     */
+    public function adjustments(): HasMany
+    {
+        return $this->hasMany(EmployeeAdjustment::class);
+    }
+
+    /**
      * HR-11: pay terms history, oldest first.
      */
     public function compensations(): HasMany

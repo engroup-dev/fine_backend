@@ -18,8 +18,10 @@ use App\Http\Controllers\Api\v1\CreditApprovalController;
 use App\Http\Controllers\Api\v1\CutterWorkOrderController;
 use App\Http\Controllers\Api\v1\DashboardController;
 use App\Http\Controllers\Api\v1\DebtorStatementController;
+use App\Http\Controllers\Api\v1\EmployeeAdjustmentController;
 use App\Http\Controllers\Api\v1\EmployeeAdvanceController;
 use App\Http\Controllers\Api\v1\EmployeeController;
+use App\Http\Controllers\Api\v1\EmployeePayItemController;
 use App\Http\Controllers\Api\v1\EntityLookupController;
 use App\Http\Controllers\Api\v1\FinancialReportController;
 use App\Http\Controllers\Api\v1\FiscalPeriodController;
@@ -276,6 +278,11 @@ Route::prefix('v1')->group(function () {
                 Route::get('/employees/{id}/compensations', [EmployeeController::class, 'compensations']);
                 Route::post('/employees/{id}/compensations', [EmployeeController::class, 'storeCompensation']);
                 Route::delete('/employees/{id}/compensations/{compensationId}', [EmployeeController::class, 'destroyCompensation']);
+                // W5-03 (HR-13): standing allowances and deductions (HR, accounting, owner write).
+                Route::get('/employees/{id}/pay-items', [EmployeePayItemController::class, 'index']);
+                Route::post('/employees/{id}/pay-items', [EmployeePayItemController::class, 'store']);
+                Route::put('/employees/{id}/pay-items/{itemId}', [EmployeePayItemController::class, 'update'])->whereUuid('itemId');
+                Route::delete('/employees/{id}/pay-items/{itemId}', [EmployeePayItemController::class, 'destroy'])->whereUuid('itemId');
                 Route::get('/hr-settings', [HrSettingsController::class, 'show']);
                 Route::put('/hr-settings', [HrSettingsController::class, 'update']);
                 Route::apiResource('employees', EmployeeController::class);
@@ -306,6 +313,16 @@ Route::prefix('v1')->group(function () {
                 Route::get('/employee-advances/{id}', [EmployeeAdvanceController::class, 'show'])->whereUuid('id');
                 Route::post('/employee-advances', [EmployeeAdvanceController::class, 'store']);
                 Route::post('/employee-advances/{id}/cancel', [EmployeeAdvanceController::class, 'cancel'])->whereUuid('id');
+                // W5-03 (HR-13): one-off rewards and deductions; HR enters drafts.
+                Route::get('/employee-adjustments', [EmployeeAdjustmentController::class, 'index']);
+                Route::post('/employee-adjustments', [EmployeeAdjustmentController::class, 'store']);
+                Route::put('/employee-adjustments/{id}', [EmployeeAdjustmentController::class, 'update'])->whereUuid('id');
+                Route::delete('/employee-adjustments/{id}', [EmployeeAdjustmentController::class, 'destroy'])->whereUuid('id');
+            });
+
+            // W5-03 (HR-13): approving a one-off reward or deduction.
+            Route::middleware(['require.role:owner,accounting-manager,hr-manager', 'require.module:approve-pay-adjustments'])->group(function () {
+                Route::post('/employee-adjustments/{id}/approve', [EmployeeAdjustmentController::class, 'approve'])->whereUuid('id');
             });
 
             // W5-02 (decision #14): approving, paying out and taking a cash repayment.

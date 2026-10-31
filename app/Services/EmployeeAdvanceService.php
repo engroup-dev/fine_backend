@@ -627,8 +627,18 @@ final class EmployeeAdvanceService
     {
         return array_values(array_filter(
             $payslip->deductions ?? [],
-            fn ($line) => is_array($line) && ($line['type'] ?? null) === self::LINE_TYPE && isset($line['installment_id']),
+            fn ($line) => is_array($line) && self::isAdvanceLine($line),
         ));
+    }
+
+    /**
+     * Whether a payslip deduction line is payroll's advance recovery line.
+     *
+     * @param  array<string, mixed>  $line
+     */
+    public static function isAdvanceLine(array $line): bool
+    {
+        return ($line['type'] ?? null) === self::LINE_TYPE && isset($line['installment_id']);
     }
 
     /**
