@@ -190,6 +190,8 @@ class AccountingService
      * The mirror re-uses the accounts the original already posted to, so it
      * skips the header and party checks: undoing an accepted balance can't
      * create a new problem, even if an account has since gained children.
+     * The exception is the HR-12 advance schedule (ADVANCE_USE_ADVANCE_FLOW /
+     * ADVANCE_USE_REPAY), which the ledger balance alone does not capture.
      */
     public function reverseEntry(JournalEntry $original, ?string $entryDate, string $reason, ?string $userId = null): JournalEntry
     {
@@ -207,6 +209,10 @@ class AccountingService
             if (JournalEntry::withTrashed()->where('reversal_of_id', $locked->id)->exists()) {
                 throw new LedgerRuleException("Entry {$locked->reference} has already been reversed.", 'ALREADY_REVERSED');
             }
+
+            // W5-02 (HR-12): the one party rule a mirror can break — it may not
+            // undo an advance's own entries or credit the scheduled part of one.
+            EmployeeAdvanceService::assertReversible($locked);
 
             $entryDate ??= CompanyClock::today();
 
@@ -493,6 +499,9 @@ class AccountingService
      * or written off; the untagged balance can only fall to zero, never go
      * negative or grow.
      *
+     * W5-02 (HR-12): a manual entry crediting an employee on 1215 takes only
+     * their balance outside the schedules of their paid-out advances.
+     *
      * @param  array<int, array<string, mixed>>  $lines
      * @param  array<string, Account>  $accounts  the accounts postJournal already resolved, keyed by code
      */
@@ -502,6 +511,9 @@ class AccountingService
 
         /** @var array<string, array{account: Account, unit: string|null, credit: float}> $untaggedCredits */
         $untaggedCredits = [];
+
+        /** @var array<string, float> $employeeNetCredits */
+        $employeeNetCredits = [];
 
         foreach ($lines as $line) {
             $employeeId = $line['employee_id'] ?? null;
@@ -566,6 +578,21 @@ class AccountingService
                     'PARTY_EMPLOYEE_UNIT_MISMATCH',
                     ['account_code' => $account->account_code],
                 );
+            }
+
+            $employeeNetCredits[$employeeId] = round(
+                ($employeeNetCredits[$employeeId] ?? 0.0) + (float) ($line['credit'] ?? 0) - (float) ($line['debit'] ?? 0),
+                4,
+            );
+        }
+
+        // W5-02 (HR-12): a manual credit to an employee's advances may not eat
+        // into the schedule of an advance payroll is recovering (ADVANCE_USE_REPAY).
+        if ($isManual) {
+            foreach ($employeeNetCredits as $employeeId => $netCredit) {
+                if ($netCredit > self::BALANCE_TOLERANCE) {
+                    EmployeeAdvanceService::assertUnscheduledCredit((string) $employeeId, $netCredit);
+                }
             }
         }
 

@@ -34,6 +34,7 @@ final class TreasuryVoucherResource extends JsonResource
             'cash_account_id' => $this->cash_account_id,
             'counter_account_code' => $this->counter_account_code,
             'client_id' => $this->client_id,
+            'employee_id' => $this->employee_id,
             'amount' => (float) $this->amount,
             'currency' => $this->currency,
             'fx_rate' => $this->fx_rate !== null ? (float) $this->fx_rate : null,
@@ -56,6 +57,12 @@ final class TreasuryVoucherResource extends JsonResource
             'client' => $this->client ? [
                 'id' => $this->client->id,
                 'name' => $this->client->entity?->name ?? $this->client->name ?? null,
+            ] : null,
+            // W5-02: the employee on an advances (1215) voucher, for the list and the print.
+            'employee' => $this->employee ? [
+                'id' => $this->employee->id,
+                'name' => $this->employee->entity?->name,
+                'employee_number' => $this->employee->employee_number,
             ] : null,
             'counter_account' => [
                 'code' => $this->counter_account_code,

@@ -89,6 +89,14 @@ final class Employee extends Model
     }
 
     /**
+     * W5-02 (HR-12): salary advances and loans.
+     */
+    public function advances(): HasMany
+    {
+        return $this->hasMany(EmployeeAdvance::class);
+    }
+
+    /**
      * HR-11: pay terms history, oldest first.
      */
     public function compensations(): HasMany

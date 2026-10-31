@@ -6,6 +6,7 @@ namespace App\Models;
 
 use App\Enums\TreasuryVoucherKind;
 use App\Enums\TreasuryVoucherStatus;
+use App\Models\Scopes\OperatingUnitScope;
 use App\Models\Traits\Auditable;
 use App\Models\Traits\BelongsToOperatingUnit;
 use App\Models\Traits\HasOptimisticLocking;
@@ -29,6 +30,7 @@ final class TreasuryVoucher extends Model
         'cash_account_id',
         'counter_account_code',
         'client_id',
+        'employee_id',
         'amount',
         'currency',
         'fx_rate',
@@ -78,6 +80,15 @@ final class TreasuryVoucher extends Model
     public function client(): BelongsTo
     {
         return $this->belongsTo(Client::class);
+    }
+
+    /**
+     * W5-02: the employee on a voucher against the advances subtree (1215),
+     * shown even after the employee was deleted.
+     */
+    public function employee(): BelongsTo
+    {
+        return $this->belongsTo(Employee::class)->withTrashed()->withoutGlobalScope(OperatingUnitScope::class);
     }
 
     public function counterAccount(): BelongsTo

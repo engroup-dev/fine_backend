@@ -16,6 +16,7 @@ use App\Models\TreasuryVoucher;
 use App\Models\User;
 use App\Support\AccountTree;
 use App\Support\CompanyClock;
+use App\Support\EmployeeAdvanceAccounts;
 use App\Support\SalesAccounts;
 use App\Support\TreasuryAccounts;
 use Carbon\Carbon;
@@ -149,6 +150,13 @@ final class TreasuryVoucherService
                     if ($employee === null) {
                         throw new LedgerRuleException('Employee not found.', 'EMPLOYEE_NOT_FOUND');
                     }
+
+                    // W5-02 (HR-12): cash against a scheduled advance goes through its
+                    // repayment, which shortens the schedule payroll deducts from; a
+                    // receipt voucher may only clear a balance outside the schedule.
+                    if ($kind === TreasuryVoucherKind::Receipt && EmployeeAdvanceAccounts::contains($counterAccount->id)) {
+                        EmployeeAdvanceService::assertUnscheduledCredit($employee->id, $amountLyd);
+                    }
                 }
             }
 
@@ -233,6 +241,8 @@ final class TreasuryVoucherService
                 'cash_account_id' => $cashAccount->id,
                 'counter_account_code' => $counterAccountCode,
                 'client_id' => $client?->id,
+                // W5-02: postJournal accepts an employee only on the advances subtree (1215).
+                'employee_id' => $employee?->id,
                 'amount' => $amount,
                 'currency' => $treasuryCurrency,
                 'fx_rate' => $fxRate,

@@ -18,6 +18,7 @@ use App\Http\Controllers\Api\v1\CreditApprovalController;
 use App\Http\Controllers\Api\v1\CutterWorkOrderController;
 use App\Http\Controllers\Api\v1\DashboardController;
 use App\Http\Controllers\Api\v1\DebtorStatementController;
+use App\Http\Controllers\Api\v1\EmployeeAdvanceController;
 use App\Http\Controllers\Api\v1\EmployeeController;
 use App\Http\Controllers\Api\v1\EntityLookupController;
 use App\Http\Controllers\Api\v1\FinancialReportController;
@@ -300,6 +301,18 @@ Route::prefix('v1')->group(function () {
                 Route::post('/leave-requests', [LeaveRequestController::class, 'store']);
                 Route::put('/leave-requests/{id}/approve', [LeaveRequestController::class, 'approve']);
                 Route::put('/leave-requests/{id}/reject', [LeaveRequestController::class, 'reject']);
+                // W5-02 (HR-12): advances and loans; HR requests and cancels.
+                Route::get('/employee-advances', [EmployeeAdvanceController::class, 'index']);
+                Route::get('/employee-advances/{id}', [EmployeeAdvanceController::class, 'show'])->whereUuid('id');
+                Route::post('/employee-advances', [EmployeeAdvanceController::class, 'store']);
+                Route::post('/employee-advances/{id}/cancel', [EmployeeAdvanceController::class, 'cancel'])->whereUuid('id');
+            });
+
+            // W5-02 (decision #14): approving, paying out and taking a cash repayment.
+            Route::middleware(['require.role:owner,accounting-manager,hr-manager', 'require.module:approve-advances'])->group(function () {
+                Route::post('/employee-advances/{id}/approve', [EmployeeAdvanceController::class, 'approve'])->whereUuid('id');
+                Route::post('/employee-advances/{id}/pay', [EmployeeAdvanceController::class, 'pay'])->whereUuid('id');
+                Route::post('/employee-advances/{id}/repay', [EmployeeAdvanceController::class, 'repay'])->whereUuid('id');
             });
 
             // Foam Manufacturing

@@ -32,6 +32,7 @@ final class TreasuryVoucherController extends Controller
         $query = TreasuryVoucher::with([
             'cashAccount',
             'client.entity',
+            'employee.entity',
             'counterAccount',
             'journalEntry',
             'cancelEntry',
@@ -58,6 +59,10 @@ final class TreasuryVoucherController extends Controller
 
         if ($request->filled('client_id')) {
             $query->where('client_id', $request->query('client_id'));
+        }
+
+        if ($request->filled('employee_id')) {
+            $query->where('employee_id', $request->query('employee_id'));
         }
 
         if ($request->filled('from')) {
@@ -88,6 +93,7 @@ final class TreasuryVoucherController extends Controller
         $voucher = TreasuryVoucher::with([
             'cashAccount',
             'client.entity',
+            'employee.entity',
             'counterAccount',
             'journalEntry',
             'cancelEntry',
@@ -153,6 +159,7 @@ final class TreasuryVoucherController extends Controller
             $voucher->load([
                 'cashAccount',
                 'client.entity',
+                'employee.entity',
                 'counterAccount',
                 'journalEntry',
                 'createdBy',
@@ -183,6 +190,7 @@ final class TreasuryVoucherController extends Controller
             $cancelled->load([
                 'cashAccount',
                 'client.entity',
+                'employee.entity',
                 'counterAccount',
                 'journalEntry',
                 'cancelEntry',

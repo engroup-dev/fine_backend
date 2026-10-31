@@ -21,12 +21,16 @@ final class Company extends Model
         'timezone',
         'fiscal_year_start_month',
         'annual_leave_days',
+        'advance_max_salary_multiple',
+        'advance_max_deduction_pct',
     ];
 
     protected $casts = [
         'overhead_absorption_enabled' => 'boolean',
         'fiscal_year_start_month' => 'integer',
         'annual_leave_days' => 'integer',
+        'advance_max_salary_multiple' => 'decimal:2',
+        'advance_max_deduction_pct' => 'decimal:2',
     ];
 
     public function operatingUnits(): HasMany

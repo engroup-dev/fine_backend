@@ -10,8 +10,11 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 
 /**
- * Company-wide HR settings. Today only the annual leave entitlement the
- * employee card measures the leave balance against (default 30 days).
+ * Company-wide HR settings: the annual leave entitlement the employee card
+ * measures the leave balance against (default 30 days), and the advance
+ * limits (HR-12, decision #14): one advance at most this multiple of the
+ * monthly base salary (default 1), and a monthly recovery at most this
+ * percentage of net pay (default 50).
  */
 final class HrSettingsController extends Controller
 {
@@ -35,20 +38,26 @@ final class HrSettingsController extends Controller
         }
 
         $validated = $request->validate([
-            'annual_leave_days' => ['required', 'integer', 'min:0', 'max:366'],
+            'annual_leave_days' => ['required_without_all:advance_max_salary_multiple,advance_max_deduction_pct', 'integer', 'min:0', 'max:366'],
+            'advance_max_salary_multiple' => ['sometimes', 'numeric', 'min:0', 'max:100'],
+            'advance_max_deduction_pct' => ['sometimes', 'numeric', 'min:0', 'max:100'],
         ]);
 
         $company = Company::query()->firstOrFail();
-        $company->update(['annual_leave_days' => (int) $validated['annual_leave_days']]);
+        $company->update($validated);
 
         return response()->json($this->payload($company));
     }
 
     /**
-     * @return array{annual_leave_days: int}
+     * @return array{annual_leave_days: int, advance_max_salary_multiple: float, advance_max_deduction_pct: float}
      */
     private function payload(Company $company): array
     {
-        return ['annual_leave_days' => (int) ($company->annual_leave_days ?? 30)];
+        return [
+            'annual_leave_days' => (int) ($company->annual_leave_days ?? 30),
+            'advance_max_salary_multiple' => (float) ($company->advance_max_salary_multiple ?? 1),
+            'advance_max_deduction_pct' => (float) ($company->advance_max_deduction_pct ?? 50),
+        ];
     }
 }

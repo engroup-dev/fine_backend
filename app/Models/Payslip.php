@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Models;
 
+use App\Services\EmployeeAdvanceService;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -58,5 +59,13 @@ final class Payslip extends Model
     public function totalDeductions(): float
     {
         return round(array_sum(array_column($this->deductions ?? [], 'amount')), 4);
+    }
+
+    /**
+     * HR-12: the part of the deductions that recovers employee advances (CR 1215).
+     */
+    public function advanceDeductions(): float
+    {
+        return round(array_sum(array_column(EmployeeAdvanceService::advanceLines($this), 'amount')), 4);
     }
 }

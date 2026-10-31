@@ -127,6 +127,9 @@ final class PayrollRunController extends Controller
             'deductions' => 'present|array',
             'deductions.*.type' => 'required|string|max:50',
             'deductions.*.amount' => 'required|numeric|min:0',
+            // HR-12: echoed back on payroll's advance lines, which are kept as calculated.
+            'deductions.*.locked' => 'sometimes|boolean',
+            'deductions.*.installment_id' => 'sometimes|nullable|string',
         ]);
 
         try {

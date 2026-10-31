@@ -162,7 +162,8 @@ test('deductions recalculate net and refuse to exceed gross', function () {
     $updated = ($this->asOwner)()->putJson("/api/v1/payslips/{$slip['id']}/deductions", [
         'deductions' => [
             ['type' => 'social_security', 'amount' => 150],
-            ['type' => 'advance', 'amount' => 200],
+            // HR-12: not 'advance', which only the advance schedule may deduct.
+            ['type' => 'penalty', 'amount' => 200],
         ],
     ])->assertStatus(200)->json();
 
@@ -174,7 +175,7 @@ test('deductions recalculate net and refuse to exceed gross', function () {
         ->and((float) $runFresh->total_net)->toBe(2810.0);
 
     ($this->asOwner)()->putJson("/api/v1/payslips/{$slip['id']}/deductions", [
-        'deductions' => [['type' => 'advance', 'amount' => 99999]],
+        'deductions' => [['type' => 'penalty', 'amount' => 99999]],
     ])->assertStatus(422)->assertJsonPath('code', 'INVALID_DEDUCTIONS');
 });
 

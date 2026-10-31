@@ -3,6 +3,7 @@
 namespace App\Providers;
 
 use App\Models\Account;
+use App\Models\AdvanceInstallment;
 use App\Models\AssemblyOrder;
 use App\Models\AssemblyOrderLine;
 use App\Models\BankReconciliation;
@@ -12,6 +13,7 @@ use App\Models\Cheque;
 use App\Models\Client;
 use App\Models\CutterWorkOrder;
 use App\Models\Employee;
+use App\Models\EmployeeAdvance;
 use App\Models\EmployeeCompensation;
 use App\Models\Entity;
 use App\Models\FiscalPeriod;
@@ -125,6 +127,8 @@ class AppServiceProvider extends ServiceProvider
         // marker too, and every one of them moves money, stock or a promise.
         Employee::observe(AuditObserver::class);
         EmployeeCompensation::observe(AuditObserver::class);
+        EmployeeAdvance::observe(AuditObserver::class);
+        AdvanceInstallment::observe(AuditObserver::class);
         Client::observe(AuditObserver::class);
         Entity::observe(AuditObserver::class);
         SalesOrder::observe(AuditObserver::class);

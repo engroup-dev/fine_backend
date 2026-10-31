@@ -4,14 +4,17 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api\v1;
 
+use App\Enums\EmployeeAdvanceStatus;
 use App\Enums\EntityRoleType;
 use App\Enums\EntityType;
 use App\Enums\PayType;
+use App\Exceptions\LedgerRuleException;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\v1\StoreEmployeeRequest;
 use App\Http\Resources\v1\EmployeeCompensationResource;
 use App\Http\Resources\v1\EmployeeResource;
 use App\Models\Employee;
+use App\Models\EmployeeAdvance;
 use App\Models\Entity;
 use App\Models\Scopes\OperatingUnitScope;
 use App\Services\EmployeeCompensationService;
@@ -44,6 +47,12 @@ final class EmployeeController extends Controller
 
         if ($request->has('status')) {
             $query->where('status', $request->query('status'));
+        }
+
+        // W5-02: deleted employees too, so an advance they still owe can be
+        // settled (receipt vouchers and repayments only; see deleted_at).
+        if ($request->boolean('with_trashed')) {
+            $query->withTrashed();
         }
 
         return EmployeeResource::collection($query->latest()->get());
@@ -204,6 +213,30 @@ final class EmployeeController extends Controller
 
         try {
             DB::transaction(function () use ($request, $employee, $compensations, $previousHireDate) {
+                // W5-02 (HR-12): an advance lives in the employee's unit (its 1215
+                // payout, payroll recovery and repayments must match it), so the
+                // unit cannot change while one is open. The employee row is locked
+                // first, as EmployeeAdvanceService::request() does, so a request
+                // cannot slip in between this check and the move.
+                $current = Employee::query()->lockForUpdate()->findOrFail($employee->id);
+
+                if ($request->filled('operating_unit_id') && $request->input('operating_unit_id') !== $current->operating_unit_id) {
+                    $openAdvanceIds = EmployeeAdvance::withoutGlobalScopes()
+                        ->whereNull('deleted_at')
+                        ->where('employee_id', $employee->id)
+                        ->whereIn('status', [EmployeeAdvanceStatus::Requested, EmployeeAdvanceStatus::Approved, EmployeeAdvanceStatus::Paid])
+                        ->pluck('id')
+                        ->all();
+
+                    if ($openAdvanceIds !== []) {
+                        throw new LedgerRuleException(
+                            'The employee has an open advance or loan; settle or cancel it before moving them to another unit.',
+                            'EMPLOYEE_HAS_OPEN_ADVANCE',
+                            ['employee_advance_ids' => $openAdvanceIds],
+                        );
+                    }
+                }
+
                 $employee->update($request->only(
                     'operating_unit_id',
                     'employee_number',

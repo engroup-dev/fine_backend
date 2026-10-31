@@ -7,6 +7,7 @@ namespace App\Services;
 use App\Enums\PayrollRunStatus;
 use App\Enums\PayType;
 use App\Exceptions\InvalidStateTransitionException;
+use App\Exceptions\LedgerRuleException;
 use App\Models\Attendance;
 use App\Models\Company;
 use App\Models\Employee;
@@ -14,6 +15,7 @@ use App\Models\LaborRoleRate;
 use App\Models\PayrollRun;
 use App\Models\Payslip;
 use App\Support\CompanyClock;
+use App\Support\EmployeeAdvanceAccounts;
 use App\Support\TreasuryAccounts;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -32,9 +34,16 @@ final class PayrollService
     /** Net pay accrued at period end awaiting disbursement. */
     public const WAGES_PAYABLE = '226';
 
+    /**
+     * HR-12: deduction types that mean advance recovery (payroll's own line
+     * type and the DED-ADV lookup); upper-cased for comparison.
+     */
+    private const ADVANCE_LINE_TYPES = ['ADVANCE', 'DED-ADV'];
+
     public function __construct(
         private readonly AccountingService $accountingService,
         private readonly EmployeeCompensationService $compensations,
+        private readonly EmployeeAdvanceService $advances,
     ) {}
 
     public function open(string $period, ?string $userId = null): PayrollRun
@@ -66,6 +75,9 @@ final class PayrollService
      * the pay terms resolved per day from the compensation history (HR-11).
      * Recalculating while still in Calculated wipes and regenerates the
      * payslips.
+     *
+     * HR-12: due advance installments become locked deduction lines, capped
+     * by the company's deduction percentage of net pay.
      */
     public function calculate(PayrollRun $run): PayrollRun
     {
@@ -84,6 +96,7 @@ final class PayrollService
                 ->get();
 
             $totalGross = 0.0;
+            $totalDeductions = 0.0;
 
             foreach ($employees as $employee) {
                 // HR-11: pay terms resolve by date; a mid-month change splits the period.
@@ -98,6 +111,9 @@ final class PayrollService
                     continue;
                 }
 
+                $deductions = $this->advances->dueDeductions($employee, $run, $gross);
+                $deductionTotal = round(array_sum(array_column($deductions, 'amount')), 4);
+
                 Payslip::create([
                     'payroll_run_id' => $run->id,
                     'employee_id' => $employee->id,
@@ -106,19 +122,20 @@ final class PayrollService
                     'attendance_pay' => $attendancePay,
                     'labor_log_pay' => 0,
                     'gross_pay' => $gross,
-                    'deductions' => [],
-                    'net_pay' => $gross,
+                    'deductions' => $deductions,
+                    'net_pay' => round($gross - $deductionTotal, 4),
                 ]);
 
                 $totalGross = round($totalGross + $gross, 4);
+                $totalDeductions = round($totalDeductions + $deductionTotal, 4);
             }
 
             $run->update([
                 'status' => PayrollRunStatus::Calculated,
                 'needs_recalculation' => false,
                 'total_gross' => $totalGross,
-                'total_deductions' => 0,
-                'total_net' => $totalGross,
+                'total_deductions' => $totalDeductions,
+                'total_net' => round($totalGross - $totalDeductions, 4),
             ]);
 
             return $run->refresh()->load('payslips.employee.entity');
@@ -173,6 +190,13 @@ final class PayrollService
      * HR-07: deductions are extensible line items; net is derived, never
      * accepted from the caller. Only while the run sits in Calculated.
      *
+     * HR-12: the locked advance lines come from the schedule only; a locked or
+     * installment line in the input is ignored (the editor sends them back),
+     * so it can be neither edited, removed nor doubled. They are re-capped to
+     * the deduction percentage of net pay after the manual lines
+     * (recapAdvanceLines). A manual line typed as an advance recovery is
+     * refused (ADVANCE_DEDUCTION_MANUAL).
+     *
      * @param  list<array{type: string, amount: float}>  $deductions
      */
     public function setDeductions(Payslip $payslip, array $deductions): Payslip
@@ -186,17 +210,39 @@ final class PayrollService
                 );
             }
 
-            $total = 0.0;
+            $locked = array_values(array_filter(
+                $payslip->deductions ?? [],
+                fn ($line) => is_array($line) && ($line['locked'] ?? false) === true,
+            ));
 
-            foreach ($deductions as $deduction) {
-                $amount = round((float) $deduction['amount'], 4);
+            $manual = array_values(array_filter(
+                $deductions,
+                fn ($line) => ($line['locked'] ?? false) !== true && ! isset($line['installment_id']),
+            ));
 
-                if ($amount < 0) {
+            // Advance recovery comes from the schedule (or a repayment): a typed
+            // advance line would credit 225 instead of 1215 and leave the
+            // installment due again next month.
+            foreach ($manual as $line) {
+                $type = strtoupper(trim((string) ($line['type'] ?? '')));
+
+                if (in_array($type, self::ADVANCE_LINE_TYPES, true)) {
+                    throw new LedgerRuleException(
+                        'Advance and loan recovery is deducted from the advance schedule by payroll (or repaid in cash through the advance); it cannot be entered as a manual deduction.',
+                        'ADVANCE_DEDUCTION_MANUAL',
+                    );
+                }
+            }
+
+            foreach ([...$locked, ...$manual] as $deduction) {
+                if (round((float) $deduction['amount'], 4) < 0) {
                     throw new InvalidArgumentException('A deduction cannot be negative.');
                 }
-
-                $total = round($total + $amount, 4);
             }
+
+            $locked = $this->recapAdvanceLines($payslip, $run, $locked, $manual);
+            $deductions = [...$locked, ...$manual];
+            $total = round(array_sum(array_map(fn (array $line) => round((float) $line['amount'], 4), $deductions)), 4);
 
             $net = round((float) $payslip->gross_pay - $total, 4);
 
@@ -218,6 +264,34 @@ final class PayrollService
     }
 
     /**
+     * HR-12 (decision #14): the advance cap is a share of net pay, so it is
+     * measured after the manual deductions. The locked advance lines are
+     * worked out again from the schedule against gross − manual deductions:
+     * a manual penalty lowers them (never below zero net), removing it
+     * restores them (up to what calculate() found while the schedule is
+     * unchanged; a change flags the run for recalculation), and the part not deducted stays pending and is due again next
+     * period, as any carry-forward. Other locked lines are kept as they are.
+     *
+     * @param  list<array<string, mixed>>  $locked
+     * @param  list<array<string, mixed>>  $manual
+     * @return list<array<string, mixed>>
+     */
+    private function recapAdvanceLines(Payslip $payslip, PayrollRun $run, array $locked, array $manual): array
+    {
+        $otherLocked = array_values(array_filter(
+            $locked,
+            fn (array $line) => ($line['type'] ?? null) !== EmployeeAdvanceService::LINE_TYPE || ! isset($line['installment_id']),
+        ));
+
+        $employee = Employee::withoutGlobalScopes()->findOrFail($payslip->employee_id);
+        $manualTotal = round(array_sum(array_map(fn (array $line) => round((float) $line['amount'], 4), $manual)), 4);
+        $otherLockedTotal = round(array_sum(array_map(fn (array $line) => round((float) $line['amount'], 4), $otherLocked)), 4);
+        $netBeforeAdvances = round((float) $payslip->gross_pay - $manualTotal - $otherLockedTotal, 4);
+
+        return [...$otherLocked, ...$this->advances->dueDeductions($employee, $run, $netBeforeAdvances)];
+    }
+
+    /**
      * @param  string|null  $cashAccountId  the treasury net pay leaves from; required to post
      */
     public function transition(PayrollRun $run, PayrollRunStatus $target, ?string $userId = null, ?string $cashAccountId = null): PayrollRun
@@ -236,10 +310,11 @@ final class PayrollService
             }
 
             // HR-11: a pay-history change reached this period after it was
-            // calculated, so its payslips carry the old terms.
+            // calculated, so its payslips carry the old terms. HR-12: a cash
+            // advance repayment reduced an installment one of them deducts.
             if ($target === PayrollRunStatus::PendingApproval && $run->needs_recalculation) {
                 throw new InvalidArgumentException(
-                    "Pay terms changed after payroll {$run->period} was calculated; recalculate it before submitting."
+                    "Pay terms or an advance repayment changed after payroll {$run->period} was calculated; recalculate it before submitting."
                 );
             }
 
@@ -249,6 +324,8 @@ final class PayrollService
 
             if ($target === PayrollRunStatus::Posted) {
                 $this->postJournal($run, $cashAccountId);
+                // HR-12: what each payslip deducted is now recovered.
+                $this->advances->applyRecoveries($run);
             }
 
             $run->status = $target;
@@ -331,6 +408,7 @@ final class PayrollService
      *   DR 57      Wage Expense               (gross pay)
      *   CR 226     Wages Payable              (net pay payable)
      *   CR 225     Payroll deductions payable (withheld)
+     *   CR 1215    Employee advances, per employee (HR-12 installments)
      *
      * 2. PAYMENT (dated today, when total net > 0):
      *   DR 226     Wages Payable              (net pay)
@@ -347,7 +425,8 @@ final class PayrollService
         foreach ($payslips->groupBy('operating_unit_id') as $unitId => $unitSlips) {
             $expensePortion = round((float) $unitSlips->sum('gross_pay'), 4);
             $net = round((float) $unitSlips->sum('net_pay'), 4);
-            $deductions = round((float) $unitSlips->sum(fn (Payslip $p) => $p->totalDeductions()), 4);
+            $advanceDeductions = round((float) $unitSlips->sum(fn (Payslip $p) => $p->advanceDeductions()), 4);
+            $deductions = round((float) $unitSlips->sum(fn (Payslip $p) => $p->totalDeductions()) - $advanceDeductions, 4);
             $totalNet = round($totalNet + $net, 4);
 
             if ($expensePortion > 0) {
@@ -373,6 +452,21 @@ final class PayrollService
                     'credit' => $deductions,
                     'operating_unit_id' => $unitId,
                 ];
+            }
+
+            // HR-12: installments recovered reduce each employee's advance balance.
+            foreach ($unitSlips as $payslip) {
+                $recovered = $payslip->advanceDeductions();
+
+                if ($recovered > 0) {
+                    $accrualLines[] = [
+                        'account_code' => EmployeeAdvanceAccounts::ROOT_CODE,
+                        'credit' => $recovered,
+                        'operating_unit_id' => $unitId,
+                        'employee_id' => $payslip->employee_id,
+                        'memo' => 'advance recovery',
+                    ];
+                }
             }
         }
 
