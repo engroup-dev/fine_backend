@@ -15,7 +15,7 @@ return [
 
     'name' => env('APP_NAME', 'Laravel'),
 
-    'version' => env('APP_VERSION', '1.10.0'),
+    'version' => env('APP_VERSION', '1.11.0'),
 
     'min_desktop_version' => env('APP_MIN_DESKTOP_VERSION', null),
 
