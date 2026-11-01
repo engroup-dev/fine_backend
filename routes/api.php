@@ -94,6 +94,8 @@ Route::prefix('v1')->group(function () {
         Route::post('/auth/logout', [AuthController::class, 'logout']);
         Route::get('/auth/me', [AuthController::class, 'me']);
         Route::post('/auth/change-password', [AuthController::class, 'changePassword']);
+        // W6-05: idle lock screen re-checks the signed-in user's password (no new token; throttled on failures).
+        Route::post('/auth/verify-password', [AuthController::class, 'verifyPassword']);
 
         // Routes requiring an updated password and operating unit scope
         Route::middleware(['ensure.password.updated', 'scope.unit'])->group(function () {
