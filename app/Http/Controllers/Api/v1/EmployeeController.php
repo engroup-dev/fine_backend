@@ -9,6 +9,7 @@ use App\Enums\EntityRoleType;
 use App\Enums\EntityType;
 use App\Enums\PayType;
 use App\Exceptions\LedgerRuleException;
+use App\Http\Controllers\Concerns\ListsAllRows;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\v1\StoreEmployeeRequest;
 use App\Http\Resources\v1\EmployeeCompensationResource;
@@ -32,8 +33,13 @@ use InvalidArgumentException;
 
 final class EmployeeController extends Controller
 {
+    use ListsAllRows;
+
     /**
-     * Display a listing of employees.
+     * Every employee the filters and unit scope match (the list is not paged).
+     * `all=1`, the desktop CSV export's mode (W6-04), returns the same rows in
+     * the same shape but refuses more than `fine.export_all_limit` with 422
+     * EXPORT_TOO_LARGE.
      */
     public function index(Request $request): AnonymousResourceCollection
     {
@@ -57,7 +63,9 @@ final class EmployeeController extends Controller
             $query->withTrashed();
         }
 
-        return EmployeeResource::collection($query->latest()->get());
+        $query->latest();
+
+        return EmployeeResource::collection($request->boolean('all') ? $this->allRows($query) : $query->get());
     }
 
     /**

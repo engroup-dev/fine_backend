@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api\v1;
 
 use App\Enums\TreasuryVoucherKind;
+use App\Http\Controllers\Concerns\ListsAllRows;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\v1\TreasuryVoucherResource;
 use App\Models\Scopes\OperatingUnitScope;
@@ -23,10 +24,18 @@ use Illuminate\Validation\Rule;
  */
 final class TreasuryVoucherController extends Controller
 {
+    use ListsAllRows;
+
     public function __construct(
         private readonly TreasuryVoucherService $voucherService,
     ) {}
 
+    /**
+     * Paged (per_page, default 25, clamped to 1..100). `all=1` returns every
+     * row the same filters and unit scope match, as one page of the same
+     * paginator shape, up to `fine.export_all_limit` rows (more is 422
+     * EXPORT_TOO_LARGE). The desktop CSV export uses it (W6-04).
+     */
     public function index(Request $request): AnonymousResourceCollection
     {
         $query = TreasuryVoucher::with([
@@ -83,7 +92,9 @@ final class TreasuryVoucherController extends Controller
             });
         }
 
-        $vouchers = $query->latest('voucher_date')->latest('created_at')->paginate($request->integer('per_page', 25));
+        $query->latest('voucher_date')->latest('created_at');
+
+        $vouchers = $this->paginateOrAll($request, $query, min(max($request->integer('per_page', 25), 1), 100));
 
         return TreasuryVoucherResource::collection($vouchers);
     }

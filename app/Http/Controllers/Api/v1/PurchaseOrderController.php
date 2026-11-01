@@ -8,6 +8,7 @@ use App\Enums\PaymentRequestStatus;
 use App\Enums\PaymentRoute;
 use App\Enums\PurchaseOrderStatus;
 use App\Exceptions\InvalidStateTransitionException;
+use App\Http\Controllers\Concerns\ListsAllRows;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\v1\StorePurchaseOrderRequest;
 use App\Http\Requests\v1\UpdatePurchaseOrderRequest;
@@ -30,6 +31,8 @@ use InvalidArgumentException;
 
 final class PurchaseOrderController extends Controller
 {
+    use ListsAllRows;
+
     /**
      * Procurement-sensible item types — items used to source a purchase order.
      * Foam blocks, finished goods, slices, etc. are produced internally and
@@ -46,6 +49,12 @@ final class PurchaseOrderController extends Controller
         private readonly PurchaseOrderStateService $stateService
     ) {}
 
+    /**
+     * At most per_page rows (default 100, max 500). `all=1` lifts that limit
+     * and returns every row the same filters and unit scope match, in the same
+     * shape, up to `fine.export_all_limit` rows (more is 422
+     * EXPORT_TOO_LARGE). The desktop CSV export uses it (W6-04).
+     */
     public function index(Request $request): AnonymousResourceCollection
     {
         $query = PurchaseOrder::with([
@@ -76,13 +85,19 @@ final class PurchaseOrderController extends Controller
             $query->where('kind', $kindFilter);
         }
 
+        $query->latest();
+
+        if ($request->boolean('all')) {
+            return PurchaseOrderResource::collection($this->allRows($query));
+        }
+
         // Cap the response size to keep the renderer's main thread responsive.
         // Clients pass `?per_page=N` to override (max 500); default 100.
         $perPage = (int) $request->query('per_page', 100);
         $perPage = max(1, min($perPage, 500));
         $query->limit($perPage);
 
-        return PurchaseOrderResource::collection($query->latest()->get());
+        return PurchaseOrderResource::collection($query->get());
     }
 
     public function store(StorePurchaseOrderRequest $request): JsonResponse

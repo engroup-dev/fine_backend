@@ -42,7 +42,9 @@ class InventoryItemController extends Controller
             $query->withSum(['stockLots as available_quantity' => fn ($q) => $q->where('status', 'available')], 'quantity');
         }
 
-        return response()->json($query->orderBy('name')->paginate(min($request->integer('per_page', 15), 100)));
+        // W6-04: names are not unique, so id breaks ties and offset paging
+        // (the desktop export walks every page) never skips or repeats a row.
+        return response()->json($query->orderBy('name')->orderBy('id')->paginate(min($request->integer('per_page', 15), 100)));
     }
 
     public function store(Request $request): JsonResponse

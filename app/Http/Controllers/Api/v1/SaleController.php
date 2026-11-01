@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api\v1;
 
+use App\Http\Controllers\Concerns\ListsAllRows;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\v1\CashAccountResource;
 use App\Models\Account;
@@ -25,12 +26,20 @@ use Illuminate\Validation\Rule;
  */
 final class SaleController extends Controller
 {
+    use ListsAllRows;
+
     public function __construct(
         private readonly SaleCheckoutService $checkoutService,
         private readonly CurrentUnitContext $unitContext,
         private readonly InstallmentPlanService $installments,
     ) {}
 
+    /**
+     * Paged (per_page, max 100). `all=1` returns every row the same filters
+     * and unit scope match, as one page of the same paginator shape, up to
+     * `fine.export_all_limit` rows (more is 422 EXPORT_TOO_LARGE). The
+     * desktop CSV export uses it (W6-04).
+     */
     public function index(Request $request): JsonResponse
     {
         $query = SalesOrder::with(['client.entity', 'buyerUnit', 'cashAccount', 'priceOverrideBy:id,name'])
@@ -61,7 +70,7 @@ final class SaleController extends Controller
             $query->whereDate('created_at', '<=', $request->query('to'));
         }
 
-        return response()->json($query->paginate(min($request->integer('per_page', 20), 100)));
+        return response()->json($this->paginateOrAll($request, $query, min($request->integer('per_page', 20), 100)));
     }
 
     /**

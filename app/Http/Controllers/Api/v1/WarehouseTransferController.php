@@ -22,6 +22,10 @@ final class WarehouseTransferController extends Controller
         private readonly CurrentUnitContext $unitContext,
     ) {}
 
+    /**
+     * Newest first, paged. The id breaks created_at ties (rows made in the
+     * same second), so walking the pages never skips or repeats a row (W6-04).
+     */
     public function index(Request $request): JsonResponse
     {
         $query = WarehouseTransfer::with(['fromWarehouse', 'toWarehouse', 'lines.inventoryItem']);
@@ -34,7 +38,7 @@ final class WarehouseTransferController extends Controller
             $query->where('transfer_number', 'like', '%'.$request->query('search').'%');
         }
 
-        return response()->json($query->latest()->paginate($request->integer('per_page', 15)));
+        return response()->json($query->latest()->orderByDesc('id')->paginate($request->integer('per_page', 15)));
     }
 
     public function store(Request $request): JsonResponse

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api\v1;
 
 use App\Exceptions\SalesRuleException;
+use App\Http\Controllers\Concerns\ListsAllRows;
 use App\Http\Controllers\Controller;
 use App\Models\Client;
 use App\Models\Quotation;
@@ -23,6 +24,8 @@ use Illuminate\Validation\Rule;
  */
 final class QuotationController extends Controller
 {
+    use ListsAllRows;
+
     private const LINE_COLUMNS = [
         'position', 'line_type', 'description', 'inventory_item_id', 'bundle_id',
         'quantity', 'length_m', 'width_m', 'height_m', 'unit_price', 'discount_amount',
@@ -34,6 +37,12 @@ final class QuotationController extends Controller
         private readonly CurrentUnitContext $unitContext,
     ) {}
 
+    /**
+     * Paged (per_page, max 100). `all=1` returns every row the same filters
+     * and unit scope match, as one page of the same paginator shape, up to
+     * `fine.export_all_limit` rows (more is 422 EXPORT_TOO_LARGE). The
+     * desktop CSV export uses it (W6-04).
+     */
     public function index(Request $request): JsonResponse
     {
         $query = Quotation::with(['client.entity', 'convertedSale:id,order_number'])
@@ -62,7 +71,7 @@ final class QuotationController extends Controller
             });
         }
 
-        return response()->json($query->paginate(min($request->integer('per_page', 20), 100)));
+        return response()->json($this->paginateOrAll($request, $query, min($request->integer('per_page', 20), 100)));
     }
 
     public function store(Request $request): JsonResponse

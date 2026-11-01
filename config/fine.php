@@ -28,4 +28,16 @@ return [
         'hard_cap_percent' => env('FX_HARD_CAP_PERCENT', 5.0),
     ],
 
+    /*
+    |--------------------------------------------------------------------------
+    | Export-all cap (W6-04)
+    |--------------------------------------------------------------------------
+    |
+    | The most rows a list returns for `all=1` (the desktop's CSV export of a
+    | server-paged list). More than this is refused with 422
+    | EXPORT_TOO_LARGE instead of being cut short.
+    */
+
+    'export_all_limit' => 5000,
+
 ];

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Api\v1;
 
 use App\Enums\EntityRoleType;
+use App\Http\Controllers\Concerns\ListsAllRows;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\v1\StoreSupplierRequest;
 use App\Http\Resources\v1\SupplierResource;
@@ -23,6 +24,14 @@ use Illuminate\Validation\ValidationException;
 
 final class SupplierController extends Controller
 {
+    use ListsAllRows;
+
+    /**
+     * Every supplier the filters and unit scope match (the list is not paged).
+     * `all=1`, the desktop CSV export's mode (W6-04), returns the same rows in
+     * the same shape but refuses more than `fine.export_all_limit` with 422
+     * EXPORT_TOO_LARGE.
+     */
     public function index(Request $request): AnonymousResourceCollection
     {
         $query = Supplier::with(['operatingUnit', 'account', 'entity']);
@@ -31,7 +40,9 @@ final class SupplierController extends Controller
             $query->where('operating_unit_id', $request->query('operating_unit_id'));
         }
 
-        return SupplierResource::collection($query->latest()->get());
+        $query->latest();
+
+        return SupplierResource::collection($request->boolean('all') ? $this->allRows($query) : $query->get());
     }
 
     public function store(StoreSupplierRequest $request, CoaLinkService $coaLinkService, SupplierService $supplierService): JsonResponse

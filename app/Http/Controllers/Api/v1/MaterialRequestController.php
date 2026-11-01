@@ -19,10 +19,15 @@ final class MaterialRequestController extends Controller
 {
     public function __construct(private readonly MaterialResolutionService $materialResolution) {}
 
+    /**
+     * Newest first, paged. The id breaks created_at ties (rows made in the
+     * same second), so walking the pages never skips or repeats a row (W6-04).
+     */
     public function index(Request $request): JsonResponse
     {
         $query = MaterialRequest::with(['inventoryItem'])
-            ->latest();
+            ->latest()
+            ->orderByDesc('id');
 
         if (filled($request->query('status'))) {
             $query->where('status', $request->query('status'));
