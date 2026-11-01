@@ -51,6 +51,8 @@ final class OperatingUnitResource extends JsonResource
             ])),
             'created_at' => $this->created_at?->toIso8601String(),
             'updated_at' => $this->updated_at?->toIso8601String(),
+            // Listed with with_trashed=1, a deleted unit says so.
+            'deleted_at' => $this->deleted_at?->toIso8601String(),
         ];
     }
 }

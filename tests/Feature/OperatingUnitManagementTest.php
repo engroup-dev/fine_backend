@@ -79,6 +79,11 @@ test('with_trashed=1 includes soft-deleted operating units', function () {
         ->json('data');
     expect(collect($all)->pluck('name')->sort()->values()->all())
         ->toBe(['Deleted', 'Live']);
+
+    // A deleted unit says so; a live one carries null.
+    $byName = collect($all)->keyBy('name');
+    expect($byName['Deleted']['deleted_at'])->not->toBeNull()
+        ->and($byName['Live']['deleted_at'])->toBeNull();
 });
 
 test('owner can soft-delete and restore an operating unit', function () {

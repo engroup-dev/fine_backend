@@ -209,3 +209,15 @@ test('the profile update leaves HR and fiscal settings alone', function () {
 
     expect($this->company->fresh()->legal_name)->toBe('Fine Foam Co.');
 });
+
+test('a profile change is audited without a unit, even when a unit is selected', function () {
+    AuditLog::query()->delete();
+
+    $this->actingAs($this->owner)
+        ->withHeader('X-Operating-Unit-ID', $this->unit->id)
+        ->putJson('/api/v1/company', ['legal_name' => 'Fine Foam Co.'])
+        ->assertOk();
+
+    $log = AuditLog::where('table_name', 'companies')->where('action', 'updated')->sole();
+    expect($log->operating_unit_id)->toBeNull();
+});
