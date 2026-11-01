@@ -61,6 +61,7 @@ test('can create and list inventory items', function () {
     $response = $this->actingAs($this->user)
         ->withHeaders(['X-Operating-Unit-ID' => $this->unit->id])
         ->postJson('/api/v1/inventory-items', [
+            'category_id' => itemCategoryId(),
             'name' => 'Polyol Standard',
             'code' => 'RAW-POLY-01',
             'item_type' => 'raw_material',

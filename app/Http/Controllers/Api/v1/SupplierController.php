@@ -6,6 +6,7 @@ namespace App\Http\Controllers\Api\v1;
 
 use App\Enums\EntityRoleType;
 use App\Http\Controllers\Concerns\ListsAllRows;
+use App\Http\Controllers\Concerns\RefusesUniqueViolations;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\v1\StoreSupplierRequest;
 use App\Http\Resources\v1\SupplierResource;
@@ -15,6 +16,7 @@ use App\Rules\LeafAccount;
 use App\Services\CoaLinkService;
 use App\Services\EntityService;
 use App\Services\SupplierService;
+use App\Support\CodedValidation;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
@@ -24,7 +26,16 @@ use Illuminate\Validation\ValidationException;
 
 final class SupplierController extends Controller
 {
-    use ListsAllRows;
+    use ListsAllRows, RefusesUniqueViolations;
+
+    /** W6-06: the refusal when the account belongs to another supplier. */
+    public const ACCOUNT_TAKEN_MESSAGE = 'This payable account is already linked to another supplier. Each supplier needs its own account.';
+
+    /** W6-06: the refusal code for that case (the desktop maps it to Arabic). */
+    public const ACCOUNT_TAKEN_CODE = 'SUPPLIER_ACCOUNT_TAKEN';
+
+    /** W6-06: identifies the suppliers.account_id unique index in a violation. */
+    private const ACCOUNT_INDEX_MARKERS = ['suppliers_account_id_unique', 'suppliers.account_id'];
 
     /**
      * Every supplier the filters and unit scope match (the list is not paged).
@@ -74,7 +85,7 @@ final class SupplierController extends Controller
             }
         }
 
-        $supplier = DB::transaction(function () use ($request, $coaLinkService, $supplierService) {
+        $supplier = $this->refuseUniqueViolation(fn () => DB::transaction(function () use ($request, $coaLinkService, $supplierService) {
             $accountId = $coaLinkService->resolveOrProvisionAccount(
                 $request->only(['coa_action', 'account_id', 'new_account']),
                 $request->user()?->company_id
@@ -94,7 +105,7 @@ final class SupplierController extends Controller
             $data['entity_id'] = $entity->id;
 
             return Supplier::create($data)->load(['operatingUnit', 'account', 'entity']);
-        });
+        }), self::ACCOUNT_INDEX_MARKERS, 'account_id', self::ACCOUNT_TAKEN_MESSAGE, self::ACCOUNT_TAKEN_CODE);
 
         return (new SupplierResource($supplier))
             ->response()
@@ -112,13 +123,14 @@ final class SupplierController extends Controller
     {
         $supplier = Supplier::with('entity')->findOrFail($id);
 
-        $request->validate([
+        CodedValidation::validate($request, [
             'operating_unit_id' => 'sometimes|required|uuid|exists:operating_units,id',
             'name' => 'sometimes|required|string|max:255',
             'contact' => 'nullable|string|max:255',
             'default_currency' => 'sometimes|string|size:3',
             'address' => 'nullable|string',
-            'account_id' => ['nullable', 'uuid', 'exists:accounts,id', new LeafAccount(requireActive: true, unchangedValue: $supplier->account_id)],
+            // W6-06: one live supplier per payable account (deleted ones release it).
+            'account_id' => ['nullable', 'uuid', 'exists:accounts,id', new LeafAccount(requireActive: true, unchangedValue: $supplier->account_id), Rule::unique('suppliers', 'account_id')->ignore($supplier->id)->withoutTrashed()],
             'coa_action' => 'nullable|string|in:create_new,link_existing,none',
             'new_account' => 'nullable|array',
             'new_account.parent_account_id' => 'required_if:coa_action,create_new|nullable|uuid|exists:accounts,id',
@@ -131,6 +143,10 @@ final class SupplierController extends Controller
             'entity_id' => ['sometimes', 'nullable', 'uuid', Rule::exists('entities', 'id')->whereNull('deleted_at')],
             'force' => 'sometimes|boolean',
             'record_version' => 'sometimes|integer',
+        ], [
+            'account_id.unique' => self::ACCOUNT_TAKEN_MESSAGE,
+        ], [
+            'account_id.Unique' => self::ACCOUNT_TAKEN_CODE,
         ]);
 
         $unitChanged = $request->has('operating_unit_id') && $request->input('operating_unit_id') !== $supplier->operating_unit_id;
@@ -168,7 +184,7 @@ final class SupplierController extends Controller
             }
         }
 
-        $supplier = DB::transaction(function () use ($request, $supplier, $coaLinkService, $supplierService, $nameChanged, $unitChanged, $entityChanged, $entityService) {
+        $supplier = $this->refuseUniqueViolation(fn () => DB::transaction(function () use ($request, $supplier, $coaLinkService, $supplierService, $nameChanged, $unitChanged, $entityChanged, $entityService) {
             $accountId = $supplier->account_id;
             if ($request->has('coa_action') || $request->has('account_id')) {
                 $accountId = $coaLinkService->resolveOrProvisionAccount(
@@ -233,7 +249,7 @@ final class SupplierController extends Controller
             }
 
             return $supplier->load(['operatingUnit', 'account', 'entity']);
-        });
+        }), self::ACCOUNT_INDEX_MARKERS, 'account_id', self::ACCOUNT_TAKEN_MESSAGE, self::ACCOUNT_TAKEN_CODE);
 
         return new SupplierResource($supplier);
     }

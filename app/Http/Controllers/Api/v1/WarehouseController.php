@@ -4,16 +4,28 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api\v1;
 
+use App\Http\Controllers\Concerns\RefusesUniqueViolations;
 use App\Http\Controllers\Controller;
 use App\Models\OperatingUnit;
 use App\Models\StockLot;
 use App\Models\Warehouse;
+use App\Rules\ExistsInCurrentUnit;
+use App\Support\CodedValidation;
 use App\Support\CurrentUnitContext;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Validation\ValidationException;
 
 class WarehouseController extends Controller
 {
+    use RefusesUniqueViolations;
+
+    /** W6-06: identifies the per-(unit, parent) name indexes in a violation. */
+    private const NAME_INDEX_MARKERS = ['warehouses_unit_top_level_name_unique', 'warehouses_unit_parent_name_unique', 'warehouses.name'];
+
+    /** W6-06: the refusal code for a name a sibling warehouse already has. */
+    public const NAME_TAKEN_CODE = 'WAREHOUSE_NAME_TAKEN';
+
     public function __construct(public CurrentUnitContext $unitContext) {}
 
     /**
@@ -56,23 +68,31 @@ class WarehouseController extends Controller
             'is_internal_unit' => ['nullable', 'boolean'],
         ]);
 
-        $warehouse = Warehouse::create([
+        $this->assertNameAvailable($validated['name'], $unit->id, null);
+
+        $warehouse = $this->refuseUniqueViolation(fn () => Warehouse::create([
             'operating_unit_id' => $unit->id,
             'name' => $validated['name'],
             'is_internal_unit' => $validated['is_internal_unit'] ?? false,
-        ]);
+        ]), self::NAME_INDEX_MARKERS, 'name', self::nameTakenMessage(null), self::NAME_TAKEN_CODE);
 
         return response()->json($warehouse, 201);
     }
 
     public function store(Request $request): JsonResponse
     {
+        // W6-06: the unit comes from the X-Operating-Unit-ID context (or the
+        // parent), never from the body. A body operating_unit_id is refused
+        // rather than ignored, so a stale client gets a clear error instead
+        // of a warehouse silently created in a different unit.
         $validated = $request->validate([
+            'operating_unit_id' => ['prohibited'],
             'name' => ['required', 'string', 'max:255'],
-            'operating_unit_id' => ['nullable', 'uuid', 'exists:operating_units,id'],
             'is_internal_unit' => ['nullable', 'boolean'],
-            'parent_id' => ['nullable', 'uuid', 'exists:warehouses,id'],
+            'parent_id' => ['nullable', 'uuid', new ExistsInCurrentUnit(Warehouse::class, 'parent warehouse')],
             'location_type' => ['nullable', 'string', 'max:32'],
+        ], [
+            'operating_unit_id.prohibited' => 'Send the operating unit in the X-Operating-Unit-ID header, not in the request body.',
         ]);
 
         $parent = null;
@@ -89,24 +109,24 @@ class WarehouseController extends Controller
 
         // A sub-warehouse always inherits its parent's unit — it is never
         // independently assigned one.
-        $unitId = $parent?->operating_unit_id
-            ?? $validated['operating_unit_id']
-            ?? $this->unitContext->getUnitId();
+        $unitId = $parent?->operating_unit_id ?? $this->unitContext->getUnitId();
 
         if ($unitId === null) {
             return response()->json([
-                'message' => 'Select an operating unit before creating a warehouse.',
+                'message' => 'Select an operating unit (X-Operating-Unit-ID) before creating a warehouse.',
                 'code' => 'OPERATING_UNIT_REQUIRED',
             ], 422);
         }
 
-        $warehouse = Warehouse::create([
+        $this->assertNameAvailable($validated['name'], $unitId, $parent?->id);
+
+        $warehouse = $this->refuseUniqueViolation(fn () => Warehouse::create([
             'operating_unit_id' => $unitId,
             'parent_id' => $parent?->id,
             'name' => $validated['name'],
             'is_internal_unit' => $validated['is_internal_unit'] ?? false,
             'location_type' => $validated['location_type'] ?? null,
-        ]);
+        ]), self::NAME_INDEX_MARKERS, 'name', self::nameTakenMessage($parent?->id), self::NAME_TAKEN_CODE);
 
         return response()->json($warehouse, 201);
     }
@@ -176,9 +196,51 @@ class WarehouseController extends Controller
             'location_type' => ['sometimes', 'nullable', 'string', 'max:32'],
         ]);
 
-        $warehouse->update($validated);
+        if (isset($validated['name']) && $validated['name'] !== $warehouse->name) {
+            $this->assertNameAvailable($validated['name'], $warehouse->operating_unit_id, $warehouse->parent_id, $warehouse->id);
+        }
+
+        $this->refuseUniqueViolation(
+            fn () => $warehouse->update($validated),
+            self::NAME_INDEX_MARKERS,
+            'name',
+            self::nameTakenMessage($warehouse->parent_id),
+            self::NAME_TAKEN_CODE,
+        );
 
         return response()->json($warehouse);
+    }
+
+    /**
+     * W6-06: a name is unique among the warehouses that share its unit and
+     * parent (top-level warehouses per unit, sub-warehouses per parent),
+     * matching the partial unique indexes on the table.
+     *
+     * @throws ValidationException (code WAREHOUSE_NAME_TAKEN) when a sibling already has the name.
+     */
+    private function assertNameAvailable(string $name, string $operatingUnitId, ?string $parentId, ?string $ignoreId = null): void
+    {
+        $taken = Warehouse::withoutGlobalScopes()
+            ->where('operating_unit_id', $operatingUnitId)
+            ->when(
+                $parentId === null,
+                fn ($query) => $query->whereNull('parent_id'),
+                fn ($query) => $query->where('parent_id', $parentId),
+            )
+            ->where('name', $name)
+            ->when($ignoreId !== null, fn ($query) => $query->whereKeyNot($ignoreId))
+            ->exists();
+
+        if ($taken) {
+            throw CodedValidation::exception(self::NAME_TAKEN_CODE, ['name' => self::nameTakenMessage($parentId)]);
+        }
+    }
+
+    private static function nameTakenMessage(?string $parentId): string
+    {
+        return $parentId === null
+            ? 'A warehouse with this name already exists in this operating unit.'
+            : 'A sub-warehouse with this name already exists under this warehouse.';
     }
 
     public function destroy(string $id): JsonResponse

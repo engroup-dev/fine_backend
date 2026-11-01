@@ -51,6 +51,7 @@ test('creating an inventory item with dimensions computes volume_m3', function (
     $response = $this->actingAs($this->user)
         ->withHeaders(['X-Operating-Unit-ID' => $this->unit->id])
         ->postJson('/api/v1/inventory-items', [
+            'category_id' => itemCategoryId(),
             'name' => 'قالب 14-12',
             'code' => 'FOAM-1412',
             'item_type' => 'foam_block',
@@ -68,6 +69,7 @@ test('creating an inventory item with only some dimensions leaves volume_m3 null
     $response = $this->actingAs($this->user)
         ->withHeaders(['X-Operating-Unit-ID' => $this->unit->id])
         ->postJson('/api/v1/inventory-items', [
+            'category_id' => itemCategoryId(),
             'name' => 'قالب غير مكتمل القياس',
             'code' => 'FOAM-PARTIAL',
             'item_type' => 'foam_block',
@@ -82,6 +84,7 @@ test('rejects a negative dimension', function () {
     $response = $this->actingAs($this->user)
         ->withHeaders(['X-Operating-Unit-ID' => $this->unit->id])
         ->postJson('/api/v1/inventory-items', [
+            'category_id' => itemCategoryId(),
             'name' => 'قالب خاطئ',
             'code' => 'FOAM-NEG',
             'item_type' => 'foam_block',

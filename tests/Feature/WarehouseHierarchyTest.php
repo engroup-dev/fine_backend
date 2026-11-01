@@ -50,7 +50,7 @@ beforeEach(function () {
     $this->asUser = fn () => $this->actingAs($this->user)->withHeader('X-Operating-Unit-ID', $this->unit->id);
 });
 
-test('creating a sub-warehouse inherits the parent operating unit and ignores a mismatched one', function () {
+test('creating a sub-warehouse inherits the parent operating unit; a body unit is refused', function () {
     $otherUnit = OperatingUnit::create([
         'company_id' => $this->company->id,
         'blueprint_id' => $this->blueprint->id,
@@ -59,11 +59,18 @@ test('creating a sub-warehouse inherits the parent operating unit and ignores a 
         'unit_type' => 'foam_manufactory',
     ]);
 
-    $response = ($this->asUser)()->postJson('/api/v1/warehouses', [
+    // W6-06: operating_unit_id is never accepted in the body.
+    ($this->asUser)()->postJson('/api/v1/warehouses', [
         'name' => 'Shelf A1',
         'parent_id' => $this->warehouse->id,
         'location_type' => 'SHELF',
         'operating_unit_id' => $otherUnit->id,
+    ])->assertStatus(422)->assertJsonValidationErrors('operating_unit_id');
+
+    $response = ($this->asUser)()->postJson('/api/v1/warehouses', [
+        'name' => 'Shelf A1',
+        'parent_id' => $this->warehouse->id,
+        'location_type' => 'SHELF',
     ]);
 
     $response->assertCreated();

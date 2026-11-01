@@ -130,11 +130,13 @@ test('the lookup requires a code', function () {
 
 test('an item is created with a barcode', function () {
     ($this->as)($this->manager)->postJson('/api/v1/inventory-items', [
+        'category_id' => itemCategoryId(),
         'name' => 'Chair', 'code' => 'CHR-1', 'barcode' => 'CHR-1-0001',
         'item_type' => 'furniture_finished_good', 'unit_of_measure' => 'piece',
     ])->assertCreated()->assertJsonPath('barcode', 'CHR-1-0001');
 
     ($this->as)($this->manager)->postJson('/api/v1/inventory-items', [
+        'category_id' => itemCategoryId(),
         'name' => 'Stool', 'code' => 'STL-1',
         'item_type' => 'furniture_finished_good', 'unit_of_measure' => 'piece',
     ])->assertCreated()->assertJsonPath('barcode', null);
@@ -142,6 +144,7 @@ test('an item is created with a barcode', function () {
 
 test('a barcode is unique across items', function () {
     ($this->as)($this->manager)->postJson('/api/v1/inventory-items', [
+        'category_id' => itemCategoryId(),
         'name' => 'Chair', 'code' => 'CHR-1', 'barcode' => '6291234567890',
         'item_type' => 'furniture_finished_good', 'unit_of_measure' => 'piece',
     ])->assertUnprocessable()->assertJsonValidationErrors('barcode');
@@ -167,6 +170,7 @@ test('an item keeps, changes or clears its own barcode', function () {
 
 test('a barcode holds printable ASCII only', function () {
     ($this->as)($this->manager)->postJson('/api/v1/inventory-items', [
+        'category_id' => itemCategoryId(),
         'name' => 'Chair', 'code' => 'CHR-1', 'barcode' => 'كرسي-1',
         'item_type' => 'furniture_finished_good', 'unit_of_measure' => 'piece',
     ])->assertUnprocessable()->assertJsonValidationErrors('barcode');
@@ -174,6 +178,7 @@ test('a barcode holds printable ASCII only', function () {
 
 test('a barcode may not equal another item\'s code', function () {
     ($this->as)($this->manager)->postJson('/api/v1/inventory-items', [
+        'category_id' => itemCategoryId(),
         'name' => 'Chair', 'code' => 'CHR-1', 'barcode' => 'BLK-1',
         'item_type' => 'furniture_finished_good', 'unit_of_measure' => 'piece',
     ])->assertUnprocessable()->assertJsonValidationErrors('barcode');
@@ -190,6 +195,7 @@ test('a barcode may not equal another item\'s code', function () {
 
 test('an item code may not equal another item\'s barcode', function () {
     ($this->as)($this->manager)->postJson('/api/v1/inventory-items', [
+        'category_id' => itemCategoryId(),
         'name' => 'Chair', 'code' => '6291234567890',
         'item_type' => 'furniture_finished_good', 'unit_of_measure' => 'piece',
     ])->assertUnprocessable()->assertJsonValidationErrors('code');
@@ -203,6 +209,7 @@ test('a barcode may not equal a lot number, in any unit', function () {
     ($this->lot)($this->block, 'LOT-FACTORY-1', $this->foreignWarehouse);
 
     ($this->as)($this->manager)->postJson('/api/v1/inventory-items', [
+        'category_id' => itemCategoryId(),
         'name' => 'Chair', 'code' => 'CHR-1', 'barcode' => 'LOT-FACTORY-1',
         'item_type' => 'furniture_finished_good', 'unit_of_measure' => 'piece',
     ])->assertUnprocessable()->assertJsonValidationErrors('barcode');
@@ -224,6 +231,7 @@ test('an item code may not equal a lot number, in any unit', function () {
     ($this->lot)($this->block, 'LOT-FACTORY-1', $this->foreignWarehouse);
 
     ($this->as)($this->manager)->postJson('/api/v1/inventory-items', [
+        'category_id' => itemCategoryId(),
         'name' => 'Chair', 'code' => 'LOT-FACTORY-1',
         'item_type' => 'furniture_finished_good', 'unit_of_measure' => 'piece',
     ])->assertUnprocessable()->assertJsonValidationErrors('code');

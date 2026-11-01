@@ -8,6 +8,7 @@ use App\Http\Controllers\Controller;
 use App\Models\InventoryItem;
 use App\Models\ItemCategory;
 use App\Models\StockLot;
+use App\Support\CodedValidation;
 use App\Support\ReferenceGuard;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -17,6 +18,9 @@ use Illuminate\Validation\Rules\Unique;
 
 class InventoryItemController extends Controller
 {
+    /** W6-06: the refusal codes the item form maps (a category is required). */
+    private const CATEGORY_CODES = ['category_id.Required' => 'ITEM_CATEGORY_REQUIRED'];
+
     public function index(Request $request): JsonResponse
     {
         $query = InventoryItem::with(['category']);
@@ -56,8 +60,10 @@ class InventoryItemController extends Controller
             }
         }
 
-        $validated = $request->validate([
-            'category_id' => ['nullable', 'uuid', Rule::exists('item_categories', 'id')->whereNull('deleted_at')],
+        $validated = CodedValidation::validate($request, [
+            // W6-06: every item belongs to a category (uncategorized ones were
+            // moved into the general "عام" category).
+            'category_id' => ['required', 'uuid', Rule::exists('item_categories', 'id')->whereNull('deleted_at')],
             'name' => ['required', 'string', 'max:255'],
             // W4-03: a code may not equal another item's barcode or any lot
             // number. The scan lookup goes barcode, then item code, then lot
@@ -88,7 +94,7 @@ class InventoryItemController extends Controller
             'wholesale_price' => ['nullable', 'numeric', 'min:0'],
             'min_price' => ['nullable', 'numeric', 'min:0'],
             'price_basis' => ['sometimes', 'string', 'in:unit,m3'],
-        ], self::scanCodeMessages());
+        ], [...self::scanCodeMessages(), ...self::categoryMessages()], self::CATEGORY_CODES);
 
         $item = InventoryItem::create($validated);
 
@@ -148,8 +154,9 @@ class InventoryItemController extends Controller
             ? self::barcodeCrossRules($id)
             : [];
 
-        $validated = $request->validate([
-            'category_id' => ['nullable', 'uuid', Rule::exists('item_categories', 'id')->whereNull('deleted_at')],
+        $validated = CodedValidation::validate($request, [
+            // W6-06: may be left out (the item keeps its category) but never cleared.
+            'category_id' => ['sometimes', 'required', 'uuid', Rule::exists('item_categories', 'id')->whereNull('deleted_at')],
             'name' => ['sometimes', 'string', 'max:255'],
             'code' => ['sometimes', 'string', 'max:100', "unique:inventory_items,code,{$id}", ...$codeCrossRules],
             'barcode' => ['nullable', 'string', 'max:64', 'regex:/^[\x20-\x7E]+$/', "unique:inventory_items,barcode,{$id}", ...$barcodeCrossRules],
@@ -171,7 +178,7 @@ class InventoryItemController extends Controller
             'wholesale_price' => ['nullable', 'numeric', 'min:0'],
             'min_price' => ['nullable', 'numeric', 'min:0'],
             'price_basis' => ['sometimes', 'string', 'in:unit,m3'],
-        ], self::scanCodeMessages());
+        ], [...self::scanCodeMessages(), ...self::categoryMessages()], self::CATEGORY_CODES);
 
         $item->update($validated);
 
@@ -204,6 +211,20 @@ class InventoryItemController extends Controller
         return [
             Rule::unique('inventory_items', 'code')->ignore($ignoreItemId),
             Rule::unique('stock_lots', 'lot_number'),
+        ];
+    }
+
+    /**
+     * W6-06: in Arabic because the item form shows the first field error as
+     * it comes; a missing category also carries the code ITEM_CATEGORY_REQUIRED.
+     *
+     * @return array<string, string>
+     */
+    private static function categoryMessages(): array
+    {
+        return [
+            'category_id.required' => 'اختر فئة للصنف (يمكن اختيار الفئة «عام»).',
+            'category_id.exists' => 'الفئة المختارة غير موجودة أو محذوفة؛ اختر فئة أخرى.',
         ];
     }
 

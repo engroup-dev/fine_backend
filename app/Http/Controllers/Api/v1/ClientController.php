@@ -8,6 +8,7 @@ use App\Enums\ClientStatus;
 use App\Enums\EntityRoleType;
 use App\Enums\EntityType;
 use App\Http\Controllers\Concerns\ListsAllRows;
+use App\Http\Controllers\Concerns\RefusesUniqueViolations;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\v1\StoreClientRequest;
 use App\Http\Resources\v1\ClientResource;
@@ -20,6 +21,7 @@ use App\Rules\LeafAccount;
 use App\Services\ClientSummaryService;
 use App\Services\CoaLinkService;
 use App\Services\EntityService;
+use App\Support\CodedValidation;
 use App\Support\CurrentUnitContext;
 use App\Support\ReceivableAccounts;
 use App\Support\ReferenceGuard;
@@ -32,7 +34,16 @@ use Illuminate\Validation\ValidationException;
 
 final class ClientController extends Controller
 {
-    use ListsAllRows;
+    use ListsAllRows, RefusesUniqueViolations;
+
+    /** W6-06: the refusal when the account belongs to another client. */
+    public const ACCOUNT_TAKEN_MESSAGE = 'This receivable account is already linked to another client. Each client needs its own account.';
+
+    /** W6-06: the refusal code for that case (the desktop maps it to Arabic). */
+    public const ACCOUNT_TAKEN_CODE = 'CLIENT_ACCOUNT_TAKEN';
+
+    /** W6-06: identifies the clients.account_id unique index in a violation. */
+    private const ACCOUNT_INDEX_MARKERS = ['clients_account_id_unique', 'clients.account_id'];
 
     /**
      * Every client the filters and unit scope match (the list is not paged).
@@ -78,7 +89,7 @@ final class ClientController extends Controller
             ], 422);
         }
 
-        $client = DB::transaction(function () use ($request, $entityService, $coaLinkService, $operatingUnitId) {
+        $client = $this->refuseUniqueViolation(fn () => DB::transaction(function () use ($request, $entityService, $coaLinkService, $operatingUnitId) {
             $entityId = $request->entity_id;
 
             if (! $entityId) {
@@ -142,7 +153,7 @@ final class ClientController extends Controller
             ]);
 
             return $client->load(['entity.primaryContact', 'operatingUnit', 'account', 'clientGroup']);
-        });
+        }), self::ACCOUNT_INDEX_MARKERS, 'account_id', self::ACCOUNT_TAKEN_MESSAGE, self::ACCOUNT_TAKEN_CODE);
 
         return (new ClientResource($client))
             ->response()
@@ -164,7 +175,7 @@ final class ClientController extends Controller
      */
     public function update(Request $request, string $id, CoaLinkService $coaLinkService): ClientResource
     {
-        $request->validate([
+        CodedValidation::validate($request, [
             'name' => 'sometimes|required|string|max:255',
             'entity_type' => ['sometimes', 'required', Rule::enum(EntityType::class)],
             'tax_number' => 'nullable|string|max:100',
@@ -177,10 +188,11 @@ final class ClientController extends Controller
             'payment_terms_days' => 'sometimes|integer|min:0',
             // Moving a client to another group keeps its own limit and terms.
             'client_group_id' => ['sometimes', 'nullable', 'uuid', Rule::exists('client_groups', 'id')->whereNull('deleted_at')],
+            // W6-06: one client per receivable account.
             'account_id' => ['nullable', 'uuid', 'exists:accounts,id', new LeafAccount(
                 requireActive: true,
                 unchangedValue: Client::query()->whereKey($id)->value('account_id'),
-            )],
+            ), Rule::unique('clients', 'account_id')->ignore($id)],
             'coa_action' => 'nullable|string|in:create_new,link_existing,none',
             'new_account' => 'nullable|array',
             'new_account.parent_account_id' => 'required_if:coa_action,create_new|nullable|uuid|exists:accounts,id',
@@ -189,9 +201,13 @@ final class ClientController extends Controller
             'new_account.currency' => 'nullable|string|size:3',
             'status' => ['sometimes', 'required', Rule::enum(ClientStatus::class)],
             'record_version' => 'required|integer',
+        ], [
+            'account_id.unique' => self::ACCOUNT_TAKEN_MESSAGE,
+        ], [
+            'account_id.Unique' => self::ACCOUNT_TAKEN_CODE,
         ]);
 
-        $client = DB::transaction(function () use ($request, $id, $coaLinkService) {
+        $client = $this->refuseUniqueViolation(fn () => DB::transaction(function () use ($request, $id, $coaLinkService) {
             $client = Client::with('entity')->findOrFail($id);
 
             // A group being removed at the same moment cannot be assigned.
@@ -267,7 +283,7 @@ final class ClientController extends Controller
             }
 
             return $client->load(['entity.primaryContact', 'operatingUnit', 'account', 'clientGroup']);
-        });
+        }), self::ACCOUNT_INDEX_MARKERS, 'account_id', self::ACCOUNT_TAKEN_MESSAGE, self::ACCOUNT_TAKEN_CODE);
 
         return new ClientResource($client);
     }

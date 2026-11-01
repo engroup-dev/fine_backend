@@ -196,10 +196,12 @@ test('listings exclude other units', function () {
 
 test('item categories are listed for every unit', function () {
     // item-categories returns a plain collection rather than a paginator
+    // W6-06: the general "عام" category is always there besides this one.
     ($this->asA)()->getJson('/api/v1/item-categories')
         ->assertStatus(200)
-        ->assertJsonCount(1)
-        ->assertJsonFragment(['code' => 'CAT-U']);
+        ->assertJsonCount(2)
+        ->assertJsonFragment(['code' => 'CAT-U'])
+        ->assertJsonFragment(['code' => 'GEN']);
 });
 
 test('bundles are universal and listed for every unit', function () {

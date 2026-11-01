@@ -37,6 +37,7 @@ beforeEach(function () {
 
 test('an inventory item can be created with cost, purchase, selling, and wholesale prices', function () {
     $response = ($this->api)()->postJson('/api/v1/inventory-items', [
+        'category_id' => itemCategoryId(),
         'name' => 'Deluxe Pillow',
         'code' => 'PIL-DELUXE-01',
         'item_type' => 'furniture_finished_good',

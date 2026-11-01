@@ -647,7 +647,8 @@ test('the merge audit row can be filtered by its action', function () {
  */
 function supplierLegImportOrderPaid(Supplier $supplier, OperatingUnit $unit, float $amount): PurchaseOrder
 {
-    $warehouse = Warehouse::firstOrCreate(['operating_unit_id' => $unit->id, 'code' => 'SUP-WH'], ['name' => 'Supplier test depot']);
+    // Warehouses have no code column; the name is unique per unit (W6-06).
+    $warehouse = Warehouse::firstOrCreate(['operating_unit_id' => $unit->id, 'name' => 'Supplier test depot']);
     $service = app(PurchaseOrderStateService::class);
 
     $order = PurchaseOrder::create([

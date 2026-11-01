@@ -3,6 +3,7 @@
 use App\Enums\InventoryEventType;
 use App\Models\Account;
 use App\Models\CashAccount;
+use App\Models\ItemCategory;
 use App\Models\OperatingUnit;
 use App\Models\OperatingUnitAccount;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -150,4 +151,13 @@ function treasuryId(string $code = '121101'): string
 function cashLeafId(string $code = '121101'): string
 {
     return Account::where('account_code', $code)->value('id');
+}
+
+/**
+ * W6-06: an item's category is required, so fixtures that create items
+ * through the API name this one.
+ */
+function itemCategoryId(): string
+{
+    return ItemCategory::firstOrCreate(['code' => 'CAT-TEST'], ['name' => 'Test category'])->id;
 }

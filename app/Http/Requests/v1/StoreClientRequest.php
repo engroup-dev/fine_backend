@@ -6,7 +6,10 @@ namespace App\Http\Requests\v1;
 
 use App\Enums\ClientStatus;
 use App\Enums\EntityType;
+use App\Http\Controllers\Api\v1\ClientController;
 use App\Rules\LeafAccount;
+use App\Support\CodedValidation;
+use Illuminate\Contracts\Validation\Validator;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
@@ -32,7 +35,8 @@ final class StoreClientRequest extends FormRequest
             'client_group_id' => ['nullable', 'uuid', Rule::exists('client_groups', 'id')->whereNull('deleted_at')],
             'credit_limit' => ['nullable', 'numeric', 'min:0'],
             'payment_terms_days' => ['nullable', 'integer', 'min:0'],
-            'account_id' => ['nullable', 'uuid', 'exists:accounts,id', new LeafAccount(requireActive: true)],
+            // W6-06: one client per receivable account.
+            'account_id' => ['nullable', 'uuid', 'exists:accounts,id', new LeafAccount(requireActive: true), Rule::unique('clients', 'account_id')],
             'coa_action' => ['nullable', 'string', 'in:auto,create_new,link_existing,none'],
             'new_account' => ['nullable', 'array'],
             'new_account.parent_account_id' => ['required_if:coa_action,create_new', 'nullable', 'uuid', 'exists:accounts,id'],
@@ -44,5 +48,26 @@ final class StoreClientRequest extends FormRequest
             'city' => ['nullable', 'string', 'max:100'],
             'address' => ['nullable', 'string', 'max:500'],
         ];
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    public function messages(): array
+    {
+        return [
+            'account_id.unique' => ClientController::ACCOUNT_TAKEN_MESSAGE,
+        ];
+    }
+
+    /**
+     * W6-06: an account already held by another client is refused with
+     * the stable code CLIENT_ACCOUNT_TAKEN.
+     */
+    protected function failedValidation(Validator $validator): void
+    {
+        CodedValidation::throwIfCoded($validator, ['account_id.Unique' => ClientController::ACCOUNT_TAKEN_CODE]);
+
+        parent::failedValidation($validator);
     }
 }

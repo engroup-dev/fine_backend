@@ -125,6 +125,7 @@ test('can define and update inventory item with container capacity and dual UOMs
     $response = $this->actingAs($this->user)
         ->withHeaders(['X-Operating-Unit-ID' => $this->unit->id])
         ->postJson('/api/v1/inventory-items', [
+            'category_id' => itemCategoryId(),
             'name' => 'Polyol Special Chemical',
             'code' => 'POLY-SPEC-200',
             'item_type' => 'raw_material',

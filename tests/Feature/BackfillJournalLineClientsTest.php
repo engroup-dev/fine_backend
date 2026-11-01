@@ -78,6 +78,9 @@ test('assigns by client sub-account', function () {
 });
 
 test('skips sub-accounts shared by several clients', function () {
+    // Shared accounts predate W6-06's unique index; drop it to stage that data.
+    (require database_path('migrations/2026_11_01_110200_add_unique_account_to_clients_and_suppliers.php'))->down();
+
     $entity = Entity::create(['name' => 'Other', 'entity_type' => 'organization', 'phone' => '0910000002']);
     $other = Client::create([
         'entity_id' => $entity->id, 'operating_unit_id' => $this->unit->id,

@@ -77,6 +77,7 @@ test('an item without a selling price suggests nothing', function () {
 
 test('the item API stores the selling price and its basis', function () {
     ($this->api)()->postJson('/api/v1/inventory-items', [
+        'category_id' => itemCategoryId(),
         'name' => 'Foam D30 piece', 'code' => 'CUT-D30', 'item_type' => 'cut_template_piece',
         'unit_of_measure' => 'each', 'selling_price' => 1200, 'price_basis' => 'm3',
     ])->assertCreated()
@@ -84,6 +85,7 @@ test('the item API stores the selling price and its basis', function () {
         ->assertJsonPath('selling_price', '1200.0000');
 
     ($this->api)()->postJson('/api/v1/inventory-items', [
+        'category_id' => itemCategoryId(),
         'name' => 'Bad basis', 'code' => 'BAD-1', 'item_type' => 'raw_material',
         'unit_of_measure' => 'each', 'price_basis' => 'kg',
     ])->assertUnprocessable()->assertJsonValidationErrors('price_basis');

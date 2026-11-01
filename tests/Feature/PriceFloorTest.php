@@ -157,6 +157,7 @@ beforeEach(function (): void {
 
 test('inventory items store and update min_price, expose minPriceFor and costFor on unit and m3 basis, and return min_price and cost_price in POS picker', function (): void {
     $created = ($this->apiAs)($this->manager)->postJson('/api/v1/inventory-items', [
+        'category_id' => itemCategoryId(),
         'name' => 'Foam Sheet D30',
         'code' => 'FOAM-D30-MIN',
         'item_type' => 'cut_template_piece',
