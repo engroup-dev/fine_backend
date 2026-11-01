@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Observers;
 
 use App\Models\AuditLog;
+use App\Models\Backup;
 use App\Models\Company;
 use App\Support\CurrentUnitContext;
 use Illuminate\Database\Eloquent\Model;
@@ -95,9 +96,9 @@ final class AuditObserver
         AuditLog::create([
             'id' => (string) Str::uuid(),
             'user_id' => auth()->id(),
-            // Company-level rows are not tied to the unit the writer had selected,
+            // Company-level rows (the company profile, W6-03 backups) are not tied to the unit the writer had selected,
             // so a single unit's audit reader never sees company-wide changes.
-            'operating_unit_id' => $model instanceof Company ? null : $context->id(),
+            'operating_unit_id' => $model instanceof Company || $model instanceof Backup ? null : $context->id(),
             'table_name' => $model->getTable(),
             'record_id' => $model->getKey(),
             'action' => $action,

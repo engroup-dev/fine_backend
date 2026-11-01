@@ -8,6 +8,7 @@ use App\Http\Controllers\Api\v1\AssemblyOrderController;
 use App\Http\Controllers\Api\v1\AttendanceController;
 use App\Http\Controllers\Api\v1\AuditLogController;
 use App\Http\Controllers\Api\v1\AuthController;
+use App\Http\Controllers\Api\v1\BackupController;
 use App\Http\Controllers\Api\v1\BankHoldController;
 use App\Http\Controllers\Api\v1\BankReconciliationController;
 use App\Http\Controllers\Api\v1\BundleController;
@@ -126,6 +127,15 @@ Route::prefix('v1')->group(function () {
                 Route::get('/audit-logs', [AuditLogController::class, 'index']);
                 Route::get('/audit-logs/tables', [AuditLogController::class, 'tables']);
                 Route::get('/audit-logs/{tableName}/{recordId}', [AuditLogController::class, 'show']);
+            });
+
+            // W6-03: database backups — the company-wide owner only (checked in the controller, since
+            // require.role also passes admins). Download streams the file found by id; no restore endpoint.
+            Route::middleware('require.role:owner')->group(function () {
+                Route::get('/backups', [BackupController::class, 'index']);
+                Route::post('/backups', [BackupController::class, 'store']);
+                Route::get('/backups/{backup}/download', [BackupController::class, 'download'])->whereUuid('backup');
+                Route::delete('/backups/{backup}', [BackupController::class, 'destroy'])->whereUuid('backup');
             });
 
             // Admin: Owner and Global Admins only

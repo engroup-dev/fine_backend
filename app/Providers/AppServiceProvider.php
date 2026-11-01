@@ -6,6 +6,7 @@ use App\Models\Account;
 use App\Models\AdvanceInstallment;
 use App\Models\AssemblyOrder;
 use App\Models\AssemblyOrderLine;
+use App\Models\Backup;
 use App\Models\BankReconciliation;
 use App\Models\Bundle;
 use App\Models\BundleItem;
@@ -98,6 +99,7 @@ class AppServiceProvider extends ServiceProvider
     {
         User::observe(AuditObserver::class);
         Company::observe(AuditObserver::class);
+        Backup::observe(AuditObserver::class);
         OperatingUnit::observe(AuditObserver::class);
         Warehouse::observe(AuditObserver::class);
         Role::observe(AuditObserver::class);

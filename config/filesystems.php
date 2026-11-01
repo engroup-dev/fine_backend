@@ -47,6 +47,18 @@ return [
             'report' => false,
         ],
 
+        // W6-03: database backups. Private (files 0600), never linked into
+        // public/ and never served by URL — the owner downloads one through
+        // the authenticated /backups/{id}/download endpoint.
+        'backups' => [
+            'driver' => 'local',
+            'root' => storage_path('app/backups'),
+            'visibility' => 'private',
+            'serve' => false,
+            'throw' => true,
+            'report' => false,
+        ],
+
         's3' => [
             'driver' => 's3',
             'key' => env('AWS_ACCESS_KEY_ID'),

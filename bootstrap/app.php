@@ -1,5 +1,6 @@
 <?php
 
+use App\Exceptions\BackupException;
 use App\Exceptions\HeaderAccountPostingException;
 use App\Exceptions\InsufficientComponentStockException;
 use App\Exceptions\InsufficientTankStockException;
@@ -125,6 +126,14 @@ return Application::configure(basePath: dirname(__DIR__))
         });
 
         $exceptions->render(function (SalesRuleException $e, Request $request) {
+            return response()->json([
+                'message' => $e->getMessage(),
+                'code' => $e->errorCode,
+                ...$e->context,
+            ], 422);
+        });
+
+        $exceptions->render(function (BackupException $e, Request $request) {
             return response()->json([
                 'message' => $e->getMessage(),
                 'code' => $e->errorCode,

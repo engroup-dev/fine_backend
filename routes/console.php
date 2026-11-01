@@ -22,3 +22,21 @@ Schedule::command('hr:sync-pay-terms')
     ->dailyAt('00:15')
     ->timezone(CompanyClock::FALLBACK_TIMEZONE)
     ->withoutOverlapping();
+
+// W6-03: nightly database backup to the private backups disk, then the
+// retention sweep (14 daily + 8 weekly), and a monthly restore test of the
+// newest backup (docs/phase-10 §10.8: daily dumps, restore tested monthly).
+Schedule::command('backup:run --scheduled')
+    ->dailyAt('02:00')
+    ->timezone(CompanyClock::FALLBACK_TIMEZONE)
+    ->withoutOverlapping();
+
+Schedule::command('backup:prune')
+    ->dailyAt('03:00')
+    ->timezone(CompanyClock::FALLBACK_TIMEZONE)
+    ->withoutOverlapping();
+
+Schedule::command('backup:verify')
+    ->monthlyOn(1, '04:00')
+    ->timezone(CompanyClock::FALLBACK_TIMEZONE)
+    ->withoutOverlapping();
