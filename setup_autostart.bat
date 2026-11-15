@@ -1,7 +1,10 @@
 @echo off
-setlocal enabledelayedexpansion
+setlocal
 title Fine Backend - Setup Autostart and Desktop Shortcut
 cd /d "%~dp0"
+
+set "FINE_HOST=192.168.2.200"
+set "FINE_PORT=8000"
 
 echo ========================================================
 echo         Fine Backend - Setup Autostart ^& Shortcut
@@ -10,78 +13,75 @@ echo.
 
 if exist "%~dp0artisan" (
     set "BACKEND_DIR=%~dp0"
-    set "ICON_PATH=%~dp0public\favicon.ico"
 ) else if exist "%~dp0fine_backend\artisan" (
     set "BACKEND_DIR=%~dp0fine_backend\"
-    set "ICON_PATH=%~dp0fine_backend\public\favicon.ico"
 ) else (
     echo [ERROR] Cannot locate backend directory.
     pause
     exit /b 1
 )
 
-echo Target Host : 192.168.2.200
-echo Target Port : 8000
-echo Directory   : !BACKEND_DIR!
+echo Target Host : %FINE_HOST%
+echo Target Port : %FINE_PORT%
+echo Directory   : "%BACKEND_DIR%"
 echo.
 
 :: Check PHP in PATH
 where php >nul 2>&1
-if %ERRORLEVEL% neq 0 (
+if errorlevel 1 (
     echo [WARNING] 'php' command was not found in your system PATH.
-    echo Please make sure PHP is installed and in your environment PATH.
+    echo The autostart entry will be created, but the backend cannot start until
+    echo PHP is installed and added to PATH.
     echo.
 ) else (
     echo [OK] PHP executable detected.
 )
 
-echo Creating Desktop shortcuts and Windows Startup entry...
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-  "$ws = New-Object -ComObject WScript.Shell; ^
-   $desktop = [Environment]::GetFolderPath('Desktop'); ^
-   $startup = [Environment]::GetFolderPath('Startup'); ^
-   $projDir = '%~dp0'.TrimEnd('\'); ^
-   $vbsPath = Join-Path $projDir 'start_backend_hidden.vbs'; ^
-   $stopPath = Join-Path $projDir 'stop_backend.bat'; ^
-   $iconPath = '!ICON_PATH!'; ^
-   ^
-   $s1 = $ws.CreateShortcut((Join-Path $desktop 'Start Fine Backend.lnk')); ^
-   $s1.TargetPath = 'wscript.exe'; ^
-   $s1.Arguments = '\"' + $vbsPath + '\"'; ^
-   $s1.WorkingDirectory = $projDir; ^
-   if (Test-Path $iconPath) { $s1.IconLocation = $iconPath; }; ^
-   $s1.Description = 'Start Fine Backend on 192.168.2.200:8000 in background'; ^
-   $s1.Save(); ^
-   ^
-   $s2 = $ws.CreateShortcut((Join-Path $desktop 'Stop Fine Backend.lnk')); ^
-   $s2.TargetPath = $stopPath; ^
-   $s2.WorkingDirectory = $projDir; ^
-   $s2.Description = 'Stop Fine Backend on port 8000'; ^
-   $s2.Save(); ^
-   ^
-   $s3 = $ws.CreateShortcut((Join-Path $startup 'Fine_Backend_Autostart.lnk')); ^
-   $s3.TargetPath = 'wscript.exe'; ^
-   $s3.Arguments = '\"' + $vbsPath + '\"'; ^
-   $s3.WorkingDirectory = $projDir; ^
-   if (Test-Path $iconPath) { $s3.IconLocation = $iconPath; }; ^
-   $s3.Description = 'Fine Backend Autostart'; ^
-   $s3.Save();"
+:: Paths go to PowerShell through environment variables, so quotes or other
+:: special characters in the folder name can't break the PowerShell code.
+set "FINE_SCRIPT_DIR=%~dp0"
+set "FINE_ICON=%BACKEND_DIR%public\favicon.ico"
 
-if %ERRORLEVEL% equ 0 (
+echo Creating Desktop shortcuts and Windows Startup entry...
+:: Each quoted chunk must close its quotes before the ^ or cmd ends the command there.
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$ErrorActionPreference = 'Stop';" ^
+  "$ws = New-Object -ComObject WScript.Shell;" ^
+  "$dir = $env:FINE_SCRIPT_DIR.TrimEnd('\');" ^
+  "$wscript = Join-Path $env:SystemRoot 'System32\wscript.exe';" ^
+  "$vbsArg = [char]34 + (Join-Path $dir 'start_backend_hidden.vbs') + [char]34;" ^
+  "$hasIcon = Test-Path -LiteralPath $env:FINE_ICON;" ^
+  "function New-Link($path, $target, $arguments, $description, $useIcon) {" ^
+  "  $s = $ws.CreateShortcut($path);" ^
+  "  $s.TargetPath = $target;" ^
+  "  $s.Arguments = $arguments;" ^
+  "  $s.WorkingDirectory = $dir;" ^
+  "  if ($useIcon) { $s.IconLocation = $env:FINE_ICON };" ^
+  "  $s.Description = $description;" ^
+  "  $s.Save()" ^
+  "};" ^
+  "$desktop = [Environment]::GetFolderPath('Desktop');" ^
+  "$startup = [Environment]::GetFolderPath('Startup');" ^
+  "New-Link (Join-Path $desktop 'Start Fine Backend.lnk') $wscript $vbsArg ('Start Fine Backend on {0}:{1} in background' -f $env:FINE_HOST, $env:FINE_PORT) $hasIcon;" ^
+  "New-Link (Join-Path $desktop 'Stop Fine Backend.lnk') (Join-Path $dir 'stop_backend.bat') '' ('Stop Fine Backend on port {0}' -f $env:FINE_PORT) $false;" ^
+  "New-Link (Join-Path $startup 'Fine_Backend_Autostart.lnk') $wscript $vbsArg 'Fine Backend Autostart' $hasIcon"
+
+if errorlevel 1 (
+    echo [ERROR] Failed to create shortcuts. See the PowerShell error above.
+) else (
     echo [OK] Desktop shortcuts created:
     echo      - Start Fine Backend.lnk
     echo      - Stop Fine Backend.lnk
     echo [OK] Autostart shortcut installed in Windows Startup folder:
     echo      - Fine_Backend_Autostart.lnk
-) else (
-    echo [ERROR] Failed to create shortcuts. Please check permissions.
 )
 
 echo.
+set "START_NOW="
 set /p START_NOW="Do you want to start the backend right now in background? (Y/N): "
-if /i "!START_NOW!"=="Y" (
+if /i "%START_NOW%"=="Y" (
     wscript.exe "%~dp0start_backend_hidden.vbs"
-    echo [OK] Backend start signal sent. Running on 192.168.2.200:8000 in background.
+    echo [OK] Backend start signal sent. It should be reachable at http://%FINE_HOST%:%FINE_PORT% within a minute.
 )
 
 echo.
