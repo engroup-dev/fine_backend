@@ -18,6 +18,7 @@ use App\Models\ProductionBatch;
 use App\Models\PurchaseOrder;
 use App\Models\SalesOrder;
 use App\Support\AccountTree;
+use App\Support\TreasuryAccounts;
 use Illuminate\Database\Eloquent\Builder;
 
 /**
@@ -42,6 +43,8 @@ final class DashboardService
         $today = now()->toDateString();
 
         $income = $this->reports->incomeStatement($monthStart, $today);
+        $cashPosition = $this->cashPosition();
+        $bankPosition = $this->ledgerBalance(AccountTree::subtreeIds(TreasuryAccounts::BANK_ROOT));
 
         $revenue = (float) $income['revenue']['total'];
         $cogsRow = collect($income['expenses']['rows'])->firstWhere('account_code', '51');
@@ -65,7 +68,10 @@ final class DashboardService
             'cogs_mtd' => round($cogs, 4),
             'gross_margin_pct' => $revenue > 0 ? round(($revenue - $cogs) / $revenue * 100, 2) : null,
             'net_profit_mtd' => (float) $income['net_income'],
-            'cash_position' => $this->cashPosition(),
+            'cash_position' => $cashPosition,
+            // CR 8: the same money split into banks (1212) and everything else.
+            'cash_position_cash' => round($cashPosition - $bankPosition, 4),
+            'cash_position_banks' => $bankPosition,
             'fx_exposure' => $exposure,
             'pending_approvals' => $this->pendingCounts(),
             // W4-02: warehouse/item pairs at or below their minimum.
@@ -264,6 +270,24 @@ final class DashboardService
             ...AccountTree::subtreeIds('121'),
             ...Account::query()->where('account_code', '12')->pluck('id')->all(),
         ];
+
+        $row = JournalLine::query()
+            ->posted()
+            ->whereIn('account_id', $accountIds)
+            ->selectRaw('SUM(journal_lines.debit) as debit, SUM(journal_lines.credit) as credit')
+            ->first();
+
+        return round((float) ($row->debit ?? 0) - (float) ($row->credit ?? 0), 4);
+    }
+
+    /**
+     * @param  list<string>  $accountIds
+     */
+    private function ledgerBalance(array $accountIds): float
+    {
+        if ($accountIds === []) {
+            return 0.0;
+        }
 
         $row = JournalLine::query()
             ->posted()

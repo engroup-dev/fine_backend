@@ -106,6 +106,8 @@ if errorlevel 1 (
     exit /b 1
 )
 php artisan optimize:clear >nul
+:: Read-only report: treasuries linked in the wrong cash/bank branch
+php artisan ledger:check-treasury-links
 echo.
 
 echo [6/6] Starting the backend...

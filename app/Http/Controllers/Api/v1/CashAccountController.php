@@ -13,11 +13,13 @@ use App\Services\AccountLedgerService;
 use App\Services\TreasuryBalanceService;
 use App\Services\TreasuryOpeningBalanceService;
 use App\Support\EmployeeAdvanceAccounts;
+use App\Support\TreasuryAccounts;
 use Closure;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 
 final class CashAccountController extends Controller
 {
@@ -85,6 +87,8 @@ final class CashAccountController extends Controller
             'opening_date' => 'nullable|date|before_or_equal:today',
         ]);
 
+        $this->assertKindBranch($request->input('account_id'), $request->input('kind', CashAccount::KIND_CASH));
+
         // The opening balance posts with the treasury or not at all (TRS-01).
         $account = DB::transaction(function () use ($request): CashAccount {
             $account = CashAccount::create([
@@ -127,6 +131,12 @@ final class CashAccountController extends Controller
         ]);
         unset($validated['opening_fx_rate'], $validated['opening_date']);
 
+        $kind = $validated['kind'] ?? $account->kind;
+        $accountId = array_key_exists('account_id', $validated) ? $validated['account_id'] : $account->account_id;
+        if ($kind !== $account->kind || $accountId !== $account->account_id) {
+            $this->assertKindBranch($accountId, $kind);
+        }
+
         DB::transaction(function () use ($account, $validated, $request): void {
             $account->update($validated);
             $this->postOpening($account, $request, $request->user());
@@ -135,6 +145,25 @@ final class CashAccountController extends Controller
         $this->treasuryBalanceService->attach([$account]);
 
         return new CashAccountResource($account);
+    }
+
+    /**
+     * CR 8: a bank links under 1212 and a cash box never does, so cash and
+     * bank totals never mix. Existing links are only checked when they change.
+     *
+     * @throws ValidationException
+     */
+    private function assertKindBranch(?string $accountId, string $kind): void
+    {
+        if ($accountId === null || TreasuryAccounts::accountMatchesKind($accountId, $kind)) {
+            return;
+        }
+
+        $message = $kind === CashAccount::KIND_BANK
+            ? 'A bank account must be linked to a ledger account under '.TreasuryAccounts::BANK_ROOT.'.'
+            : 'A cash treasury cannot be linked to a bank account (under '.TreasuryAccounts::BANK_ROOT.').';
+
+        throw ValidationException::withMessages(['account_id' => [$message]]);
     }
 
     private function postOpening(CashAccount $account, Request $request, ?User $user): void

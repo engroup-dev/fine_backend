@@ -16,6 +16,23 @@ use App\Models\CashAccount;
 final class TreasuryAccounts
 {
     /**
+     * CR 8: banks live under 1212 (حسابات المصارف) and nothing else does. Cash
+     * boxes sit under 1211 (الخزائن النقدية), and custody boxes under 1214.
+     */
+    public const BANK_ROOT = '1212';
+
+    /**
+     * Whether a ledger account suits the treasury kind: a bank must be in the
+     * bank branch, and a cash box must not be.
+     */
+    public static function accountMatchesKind(string $accountId, string $kind): bool
+    {
+        $inBankBranch = in_array($accountId, AccountTree::subtreeIds(self::BANK_ROOT), true);
+
+        return $kind === CashAccount::KIND_BANK ? $inBankBranch : ! $inBankBranch;
+    }
+
+    /**
      * A treasury that is not linked to the chart cannot move money — posting it
      * to a header account would hide it from every cash report.
      *
