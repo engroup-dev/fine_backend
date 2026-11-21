@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http\Resources\v1;
 
+use App\Services\TreasuryOpeningBalanceService;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -25,6 +26,8 @@ final class CashAccountResource extends JsonResource
             'currency' => $this->currency,
             // Creation-time opening figure; the real balance is ledger_balance (TRS-01).
             'balance' => (float) $this->balance,
+            // TRS-01: whether the opening balance above has reached the ledger.
+            'has_opening_entry' => app(TreasuryOpeningBalanceService::class)->hasOpening($this->resource),
             // Attached by TreasuryBalanceService::attach() in one query for the whole list.
             'ledger_balance' => $this->when($this->resource->ledger_balance !== null, fn () => $this->resource->ledger_balance),
             'currency_balances' => $this->when($this->resource->currency_balances !== null, fn () => $this->resource->currency_balances),

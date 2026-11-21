@@ -181,3 +181,32 @@ test('the backfill command posts missing openings and skips anything that could 
 test('the backfill command rejects a malformed rate', function (): void {
     $this->artisan('ledger:post-treasury-openings', ['--dry-run' => true, '--fx' => ['USD']])->assertFailed();
 });
+
+test('an existing treasury can set its opening balance once', function (): void {
+    $treasury = CashAccount::create([
+        'operating_unit_id' => $this->unit->id,
+        'name' => 'Bootstrap treasury',
+        'kind' => 'cash',
+        'account_id' => ($this->leaf)('121104'),
+        'currency' => 'LYD',
+        'balance' => 0,
+    ]);
+
+    $put = fn (array $data) => $this->actingAs($this->owner)
+        ->withHeaders(['X-Operating-Unit-ID' => $this->unit->id])
+        ->putJson("/api/v1/cash-accounts/{$treasury->id}", $data);
+
+    $put(['opening_balance' => 7500, 'opening_date' => '2026-11-01'])
+        ->assertOk()
+        ->assertJsonPath('data.has_opening_entry', true)
+        ->assertJsonPath('data.balance', 7500);
+
+    expect(($this->openingEntries)($treasury)->sole()->entry_date->toDateString())->toBe('2026-11-01')
+        ->and(($this->ledgerBalance)($treasury))->toBe(7500.0);
+
+    $put(['opening_balance' => 9000])
+        ->assertStatus(422)
+        ->assertJsonPath('code', 'OPENING_ALREADY_POSTED');
+
+    expect((float) $treasury->fresh()->balance)->toBe(7500.0);
+});

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api\v1;
 
+use App\Exceptions\LedgerRuleException;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\v1\CashAccountResource;
 use App\Models\CashAccount;
@@ -115,8 +116,10 @@ final class CashAccountController extends Controller
 
     /**
      * Rename a treasury, change its kind, or link it to its ledger account.
-     * The opening balance is fixed at creation; a treasury created unlinked
-     * posts it when it is first linked.
+     * A treasury created unlinked posts its opening balance when it is first
+     * linked. Until an opening entry exists the opening balance can still be
+     * set once here (treasuries made before v1.14 had no way to enter one);
+     * after that it is fixed.
      */
     public function update(Request $request, string $id): CashAccountResource
     {
@@ -126,10 +129,22 @@ final class CashAccountController extends Controller
             'name' => 'sometimes|required|string|max:255',
             'kind' => 'sometimes|string|in:cash,bank',
             'account_id' => ['sometimes', 'nullable', 'uuid', 'exists:accounts,id', new LeafAccount(requireActive: true, unchangedValue: $account->account_id), $this->notEmployeeAdvance($account->account_id)],
+            'opening_balance' => 'sometimes|numeric',
             'opening_fx_rate' => 'nullable|numeric|gt:0',
             'opening_date' => 'nullable|date|before_or_equal:today',
         ]);
-        unset($validated['opening_fx_rate'], $validated['opening_date']);
+        unset($validated['opening_balance'], $validated['opening_fx_rate'], $validated['opening_date']);
+
+        if ($request->has('opening_balance')) {
+            if ($this->openingBalances->hasOpening($account)) {
+                throw new LedgerRuleException(
+                    "The opening balance of '{$account->name}' is already posted; correct it with a journal entry.",
+                    'OPENING_ALREADY_POSTED',
+                );
+            }
+
+            $validated['balance'] = round((float) $request->input('opening_balance'), 4);
+        }
 
         $kind = $validated['kind'] ?? $account->kind;
         $accountId = array_key_exists('account_id', $validated) ? $validated['account_id'] : $account->account_id;
