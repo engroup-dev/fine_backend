@@ -269,6 +269,8 @@ Route::prefix('v1')->group(function () {
                 Route::get('/bank-reconciliations/{id}', [BankReconciliationController::class, 'show']);
                 Route::post('/bank-reconciliations/{id}/lines', [BankReconciliationController::class, 'toggleLines']);
                 Route::post('/bank-reconciliations/{id}/finish', [BankReconciliationController::class, 'finish']);
+                Route::post('/bank-reconciliations/{id}/adjustments', [BankReconciliationController::class, 'storeAdjustment']);
+                Route::delete('/bank-reconciliations/{id}/adjustments/{adjustmentId}', [BankReconciliationController::class, 'destroyAdjustment']);
                 Route::delete('/bank-reconciliations/{id}', [BankReconciliationController::class, 'destroy']);
                 Route::get('/cheques/summary', [ChequeController::class, 'summary']);
                 Route::get('/cheques', [ChequeController::class, 'index']);

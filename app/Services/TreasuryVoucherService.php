@@ -12,6 +12,7 @@ use App\Models\CashAccount;
 use App\Models\Client;
 use App\Models\Company;
 use App\Models\Employee;
+use App\Models\Scopes\OperatingUnitScope;
 use App\Models\TreasuryVoucher;
 use App\Models\User;
 use App\Support\AccountTree;
@@ -259,19 +260,23 @@ final class TreasuryVoucherService
     }
 
     /**
-     * Cancel an existing posted voucher and reverse its journal entry.
+     * Cancel an existing posted voucher and reverse its journal entry, dated
+     * today unless a cancel date is given (a bank reconciliation dates it on
+     * the voucher's own date so both stay inside the same statement).
      *
      * @throws LedgerRuleException
      */
-    public function cancel(TreasuryVoucher $v, string $reason, User $user): TreasuryVoucher
+    public function cancel(TreasuryVoucher $v, string $reason, User $user, ?string $cancelDate = null): TreasuryVoucher
     {
         $reason = trim($reason);
         if ($reason === '') {
             throw new LedgerRuleException('A cancellation reason is required.', 'CANCEL_REASON_REQUIRED');
         }
 
-        return DB::transaction(function () use ($v, $reason, $user): TreasuryVoucher {
-            $voucher = TreasuryVoucher::whereKey($v->getKey())->lockForUpdate()->firstOrFail();
+        return DB::transaction(function () use ($v, $reason, $user, $cancelDate): TreasuryVoucher {
+            // The caller already resolved (and authorized) the voucher.
+            $voucher = TreasuryVoucher::withoutGlobalScope(OperatingUnitScope::class)
+                ->whereKey($v->getKey())->lockForUpdate()->firstOrFail();
 
             if ($voucher->status !== TreasuryVoucherStatus::Posted) {
                 throw new LedgerRuleException(
@@ -282,7 +287,7 @@ final class TreasuryVoucherService
 
             $cancelEntry = $this->accountingService->reverseEntry(
                 $voucher->journalEntry,
-                CompanyClock::today(),
+                $cancelDate ?? CompanyClock::today(),
                 $reason,
                 $user->id,
             );

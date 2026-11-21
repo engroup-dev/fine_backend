@@ -68,4 +68,9 @@ final class BankReconciliation extends Model
     {
         return $this->hasMany(BankReconciliationLine::class, 'bank_reconciliation_id');
     }
+
+    public function adjustments(): HasMany
+    {
+        return $this->hasMany(BankReconciliationAdjustment::class, 'bank_reconciliation_id');
+    }
 }

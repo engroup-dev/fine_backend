@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Api\v1;
 
+use App\Enums\BankReconciliationAdjustmentType;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\v1\BankReconciliationResource;
 use App\Models\BankReconciliation;
@@ -13,6 +14,7 @@ use App\Support\CompanyClock;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
+use Illuminate\Validation\Rule;
 
 /**
  * Phase 08 Wave 2 / TRS-04: Bank reconciliation controller (التسوية المصرفية).
@@ -129,6 +131,46 @@ final class BankReconciliationController extends Controller
         return response()->noContent();
     }
 
+    /**
+     * TRS-04: post a statement item that is missing from the books (bank
+     * charges, interest, direct deposits or debits) and clear it.
+     */
+    public function storeAdjustment(Request $request, string $id): JsonResponse
+    {
+        if ($forbidden = $this->checkMutationPermission($request)) {
+            return $forbidden;
+        }
+
+        $validated = $request->validate([
+            'type' => ['required', Rule::enum(BankReconciliationAdjustmentType::class)],
+            'amount' => ['required', 'numeric', 'gt:0'],
+            'date' => ['nullable', 'date'],
+            'description' => ['nullable', 'string', 'max:250'],
+            'counter_account_code' => ['nullable', 'string', 'max:20'],
+            'client_id' => ['nullable', 'uuid', 'exists:clients,id'],
+            'fx_rate' => ['nullable', 'numeric', 'gt:0'],
+        ]);
+
+        $rec = BankReconciliation::findOrFail($id);
+
+        $this->service->addAdjustment($rec, $validated, $request->user());
+
+        return $this->showPayload($rec->fresh(), $request, 201);
+    }
+
+    public function destroyAdjustment(Request $request, string $id, string $adjustmentId): JsonResponse
+    {
+        if ($forbidden = $this->checkMutationPermission($request)) {
+            return $forbidden;
+        }
+
+        $rec = BankReconciliation::findOrFail($id);
+
+        $this->service->removeAdjustment($rec, $adjustmentId, $request->user());
+
+        return $this->showPayload($rec->fresh(), $request, 200);
+    }
+
     private function checkMutationPermission(Request $request): ?JsonResponse
     {
         $user = $request->user();
@@ -156,6 +198,7 @@ final class BankReconciliationController extends Controller
                 'reconciliation' => (new BankReconciliationResource($rec))->toArray($request),
                 'summary' => $this->service->summary($rec),
                 'lines' => $this->service->candidates($rec),
+                'adjustments' => $this->service->adjustments($rec),
             ],
         ], $status);
     }

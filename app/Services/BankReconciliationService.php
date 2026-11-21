@@ -4,9 +4,12 @@ declare(strict_types=1);
 
 namespace App\Services;
 
+use App\Enums\BankReconciliationAdjustmentType;
 use App\Enums\BankReconciliationStatus;
+use App\Enums\TreasuryVoucherKind;
 use App\Exceptions\LedgerRuleException;
 use App\Models\BankReconciliation;
+use App\Models\BankReconciliationAdjustment;
 use App\Models\BankReconciliationLine;
 use App\Models\CashAccount;
 use App\Models\Company;
@@ -23,6 +26,10 @@ use Illuminate\Support\Facades\DB;
  */
 final class BankReconciliationService
 {
+    public function __construct(
+        private readonly TreasuryVoucherService $vouchers,
+    ) {}
+
     /**
      * Start a draft reconciliation for a bank treasury.
      *
@@ -348,7 +355,9 @@ final class BankReconciliationService
     }
 
     /**
-     * Discard a draft reconciliation and its cleared lines.
+     * Discard a draft reconciliation and its cleared lines. Adjustment vouchers
+     * stay posted: they record real bank activity and come back as lines in
+     * the next draft.
      *
      * @throws LedgerRuleException
      */
@@ -359,8 +368,150 @@ final class BankReconciliationService
         }
 
         DB::transaction(function () use ($rec): void {
+            $rec->adjustments()->delete();
             $rec->lines()->delete();
             $rec->delete();
         });
+    }
+
+    /**
+     * Post a statement item that is not in the books yet (a bank charge,
+     * interest, a direct deposit or debit) as a voucher on the bank, dated on
+     * or before the statement date, and clear its bank line straight away.
+     *
+     * @param  array{type: string, amount: float|int|string, description?: string|null, date?: string|null, counter_account_code?: string|null, client_id?: string|null, fx_rate?: float|int|string|null}  $data
+     *
+     * @throws LedgerRuleException
+     */
+    public function addAdjustment(BankReconciliation $rec, array $data, User $user): BankReconciliationAdjustment
+    {
+        return DB::transaction(function () use ($rec, $data, $user): BankReconciliationAdjustment {
+            $locked = $this->lockDraft($rec);
+            $locked->loadMissing('cashAccount');
+            $type = BankReconciliationAdjustmentType::from($data['type']);
+
+            $statementDate = $locked->statement_date->toDateString();
+            $date = filled($data['date'] ?? null) ? (string) $data['date'] : $statementDate;
+            if (Carbon::parse($date)->gt(Carbon::parse($statementDate))) {
+                throw new LedgerRuleException('An adjustment cannot be dated after the statement date.', 'ADJUSTMENT_AFTER_STATEMENT');
+            }
+
+            $clientId = filled($data['client_id'] ?? null) ? (string) $data['client_id'] : null;
+            $counterCode = filled($data['counter_account_code'] ?? null)
+                ? trim((string) $data['counter_account_code'])
+                : $type->defaultCounterAccountCode();
+
+            $voucher = $this->vouchers->create([
+                'kind' => $type->voucherKind(),
+                'cash_account_id' => $locked->cash_account_id,
+                'amount' => $data['amount'],
+                'fx_rate' => $data['fx_rate'] ?? null,
+                'voucher_date' => $date,
+                'operating_unit_id' => $locked->cashAccount->operating_unit_id,
+                'company_id' => $locked->company_id,
+                'client_id' => $clientId,
+                'counter_account_code' => $clientId === null ? $counterCode : null,
+                'description' => filled($data['description'] ?? null)
+                    ? trim((string) $data['description'])
+                    : "{$type->label()} — تسوية مصرفية",
+            ], $user);
+
+            BankReconciliationLine::create([
+                'bank_reconciliation_id' => $locked->id,
+                'journal_line_id' => $this->bankLineId($locked, (string) $voucher->journal_entry_id),
+            ]);
+
+            return BankReconciliationAdjustment::create([
+                'bank_reconciliation_id' => $locked->id,
+                'treasury_voucher_id' => $voucher->id,
+                'type' => $type,
+            ]);
+        });
+    }
+
+    /**
+     * Take back an adjustment added by mistake: its voucher is cancelled with
+     * the reversal dated on the voucher's own date, and both bank lines are
+     * cleared together so they net to zero instead of resurfacing later.
+     *
+     * @throws LedgerRuleException
+     */
+    public function removeAdjustment(BankReconciliation $rec, string $adjustmentId, User $user): void
+    {
+        DB::transaction(function () use ($rec, $adjustmentId, $user): void {
+            $locked = $this->lockDraft($rec);
+            $adjustment = BankReconciliationAdjustment::query()
+                ->where('bank_reconciliation_id', $locked->id)
+                ->with('voucher')
+                ->findOrFail($adjustmentId);
+
+            $voucher = $adjustment->voucher;
+            $cancelled = $this->vouchers->cancel(
+                $voucher,
+                'حذف تسوية من التسوية المصرفية',
+                $user,
+                $voucher->voucher_date->toDateString(),
+            );
+
+            BankReconciliationLine::firstOrCreate([
+                'bank_reconciliation_id' => $locked->id,
+                'journal_line_id' => $this->bankLineId($locked, (string) $cancelled->cancel_journal_entry_id),
+            ]);
+
+            $adjustment->delete();
+        });
+    }
+
+    /**
+     * Adjustments posted from this reconciliation, oldest first, in the
+     * treasury's currency.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function adjustments(BankReconciliation $rec): array
+    {
+        return $rec->adjustments()
+            ->with('voucher')
+            ->oldest()
+            ->get()
+            ->map(fn (BankReconciliationAdjustment $adjustment): array => [
+                'id' => $adjustment->id,
+                'type' => $adjustment->type->value,
+                'type_label' => $adjustment->type->label(),
+                'direction' => $adjustment->type->voucherKind() === TreasuryVoucherKind::Receipt ? 'in' : 'out',
+                'amount' => round((float) $adjustment->voucher->amount, 4),
+                'date' => $adjustment->voucher->voucher_date->toDateString(),
+                'description' => $adjustment->voucher->description,
+                'voucher_id' => $adjustment->voucher->id,
+                'voucher_number' => $adjustment->voucher->voucher_number,
+                'counter_account_code' => $adjustment->voucher->counter_account_code,
+                'client_id' => $adjustment->voucher->client_id,
+            ])
+            ->values()
+            ->all();
+    }
+
+    private function lockDraft(BankReconciliation $rec): BankReconciliation
+    {
+        $locked = BankReconciliation::whereKey($rec->id)->lockForUpdate()->firstOrFail();
+
+        if ($locked->status !== BankReconciliationStatus::Draft) {
+            throw new LedgerRuleException('This reconciliation is already finished and cannot be modified.', 'RECONCILIATION_FINISHED');
+        }
+
+        return $locked;
+    }
+
+    /**
+     * The line an entry wrote on the reconciled bank's ledger account.
+     */
+    private function bankLineId(BankReconciliation $rec, string $journalEntryId): string
+    {
+        $rec->loadMissing('cashAccount');
+
+        return (string) JournalLine::query()
+            ->where('journal_entry_id', $journalEntryId)
+            ->where('account_id', $rec->cashAccount->account_id)
+            ->valueOrFail('id');
     }
 }
