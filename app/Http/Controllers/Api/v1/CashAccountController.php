@@ -7,19 +7,23 @@ namespace App\Http\Controllers\Api\v1;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\v1\CashAccountResource;
 use App\Models\CashAccount;
+use App\Models\User;
 use App\Rules\LeafAccount;
 use App\Services\AccountLedgerService;
 use App\Services\TreasuryBalanceService;
+use App\Services\TreasuryOpeningBalanceService;
 use App\Support\EmployeeAdvanceAccounts;
 use Closure;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
+use Illuminate\Support\Facades\DB;
 
 final class CashAccountController extends Controller
 {
     public function __construct(
         private readonly TreasuryBalanceService $treasuryBalanceService,
+        private readonly TreasuryOpeningBalanceService $openingBalances,
     ) {}
 
     public function index(Request $request): AnonymousResourceCollection
@@ -77,16 +81,25 @@ final class CashAccountController extends Controller
             'account_id' => ['nullable', 'uuid', 'exists:accounts,id', new LeafAccount(requireActive: true), $this->notEmployeeAdvance()],
             'currency' => 'sometimes|string|size:3',
             'balance' => 'sometimes|numeric',
+            'opening_fx_rate' => 'nullable|numeric|gt:0',
+            'opening_date' => 'nullable|date|before_or_equal:today',
         ]);
 
-        $account = CashAccount::create([
-            'operating_unit_id' => $request->input('operating_unit_id'),
-            'name' => $request->input('name'),
-            'kind' => $request->input('kind', CashAccount::KIND_CASH),
-            'account_id' => $request->input('account_id'),
-            'currency' => strtoupper($request->input('currency', 'LYD')),
-            'balance' => $request->input('balance', 0),
-        ]);
+        // The opening balance posts with the treasury or not at all (TRS-01).
+        $account = DB::transaction(function () use ($request): CashAccount {
+            $account = CashAccount::create([
+                'operating_unit_id' => $request->input('operating_unit_id'),
+                'name' => $request->input('name'),
+                'kind' => $request->input('kind', CashAccount::KIND_CASH),
+                'account_id' => $request->input('account_id'),
+                'currency' => strtoupper($request->input('currency', 'LYD')),
+                'balance' => $request->input('balance', 0),
+            ]);
+
+            $this->postOpening($account, $request, $request->user());
+
+            return $account;
+        });
 
         $account->load('account');
         $this->treasuryBalanceService->attach([$account]);
@@ -98,6 +111,8 @@ final class CashAccountController extends Controller
 
     /**
      * Rename a treasury, change its kind, or link it to its ledger account.
+     * The opening balance is fixed at creation; a treasury created unlinked
+     * posts it when it is first linked.
      */
     public function update(Request $request, string $id): CashAccountResource
     {
@@ -107,13 +122,35 @@ final class CashAccountController extends Controller
             'name' => 'sometimes|required|string|max:255',
             'kind' => 'sometimes|string|in:cash,bank',
             'account_id' => ['sometimes', 'nullable', 'uuid', 'exists:accounts,id', new LeafAccount(requireActive: true, unchangedValue: $account->account_id), $this->notEmployeeAdvance($account->account_id)],
+            'opening_fx_rate' => 'nullable|numeric|gt:0',
+            'opening_date' => 'nullable|date|before_or_equal:today',
         ]);
+        unset($validated['opening_fx_rate'], $validated['opening_date']);
 
-        $account->update($validated);
+        DB::transaction(function () use ($account, $validated, $request): void {
+            $account->update($validated);
+            $this->postOpening($account, $request, $request->user());
+        });
         $account->load('account');
         $this->treasuryBalanceService->attach([$account]);
 
         return new CashAccountResource($account);
+    }
+
+    private function postOpening(CashAccount $account, Request $request, ?User $user): void
+    {
+        if ($account->account_id === null) {
+            return;
+        }
+
+        $fxRate = $request->input('opening_fx_rate');
+
+        $this->openingBalances->post(
+            $account,
+            fxRate: $fxRate !== null ? (float) $fxRate : null,
+            entryDate: $request->input('opening_date'),
+            user: $user,
+        );
     }
 
     /**
