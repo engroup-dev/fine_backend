@@ -76,6 +76,25 @@ if errorlevel 1 (
     echo      - Fine_Backend_Autostart.lnk
 )
 
+:: Laravel's scheduler (nightly backup, pay-terms sync, monthly depreciation and
+:: restore test) needs something to call it every minute. Like the backend, the
+:: task runs as this user while logged on, so it needs no admin rights.
+echo.
+echo Registering the "Fine Backend Scheduler" task...
+set "SCHED_TASK=Fine Backend Scheduler"
+set "SCHED_VBS=%~dp0run_scheduler_hidden.vbs"
+schtasks /Create /TN "%SCHED_TASK%" /TR "\"%SystemRoot%\System32\wscript.exe\" \"%SCHED_VBS%\"" /SC MINUTE /MO 1 /F >nul
+if errorlevel 1 goto sched_failed
+:: Keep running on battery, never start a second copy, stop a stuck run after an hour
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Hours 1);" ^
+  "Set-ScheduledTask -TaskName $env:SCHED_TASK -Settings $s | Out-Null" >nul 2>&1
+echo [OK] Scheduled jobs task installed (runs every minute while this user is logged on).
+goto sched_done
+:sched_failed
+echo [ERROR] Could not create the scheduled jobs task. Nightly backups will not run.
+:sched_done
+
 echo.
 set "START_NOW="
 set /p START_NOW="Do you want to start the backend right now in background? (Y/N): "

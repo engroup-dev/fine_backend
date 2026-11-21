@@ -15,7 +15,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
   "$links = @((Join-Path $desktop 'Start Fine Backend.lnk'), (Join-Path $desktop 'Stop Fine Backend.lnk'), (Join-Path $startup 'Fine_Backend_Autostart.lnk'));" ^
   "foreach ($f in $links) { if (Test-Path -LiteralPath $f) { Remove-Item -LiteralPath $f -Force; Write-Host '[REMOVED]' $f } }"
 
+schtasks /Delete /TN "Fine Backend Scheduler" /F >nul 2>&1
+if not errorlevel 1 echo [REMOVED] Scheduled jobs task "Fine Backend Scheduler"
+
 echo.
-echo Autostart and shortcuts removed.
+echo Autostart, shortcuts and the scheduled jobs task removed.
 echo The backend itself is still running if it was started; use stop_backend.bat to stop it.
 pause
