@@ -12,6 +12,7 @@ use App\Services\TreasuryTransferService;
 use App\Support\CompanyClock;
 use App\Support\CurrentUnitContext;
 use Carbon\Carbon;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
@@ -34,6 +35,12 @@ final class TreasuryTransferController extends Controller
             'decidedBy',
             'journalEntry',
         ]);
+
+        // A company-wide approver must see pending transfers from every unit,
+        // not only the unit pinned in the top bar.
+        if ($request->boolean('company_wide') && $request->user()?->hasCompanyWideRole()) {
+            $query->withoutGlobalScope(OperatingUnitScope::class);
+        }
 
         if ($request->filled('operating_unit_id') && $request->user()?->hasCompanyWideRole()) {
             $query->withoutGlobalScope(OperatingUnitScope::class)
@@ -74,9 +81,9 @@ final class TreasuryTransferController extends Controller
         return TreasuryTransferResource::collection($transfers);
     }
 
-    public function show(string $id): TreasuryTransferResource
+    public function show(Request $request, string $id): TreasuryTransferResource
     {
-        $transfer = TreasuryTransfer::with([
+        $transfer = $this->visibleTo($request)->with([
             'fromCashAccount',
             'toCashAccount',
             'createdBy',
@@ -160,7 +167,7 @@ final class TreasuryTransferController extends Controller
             'note' => ['nullable', 'string', 'max:500'],
         ]);
 
-        $transfer = TreasuryTransfer::findOrFail($id);
+        $transfer = $this->visibleTo($request)->findOrFail($id);
 
         $fxRate = isset($validated['fx_rate']) && is_numeric($validated['fx_rate'])
             ? (float) $validated['fx_rate']
@@ -195,7 +202,7 @@ final class TreasuryTransferController extends Controller
             'note' => ['required', 'string', 'max:500'],
         ]);
 
-        $transfer = TreasuryTransfer::findOrFail($id);
+        $transfer = $this->visibleTo($request)->findOrFail($id);
 
         $rejected = $this->transferService->reject($transfer, $user, $validated['note']);
 
@@ -214,7 +221,7 @@ final class TreasuryTransferController extends Controller
     {
         $user = $request->user();
 
-        $transfer = TreasuryTransfer::findOrFail($id);
+        $transfer = $this->visibleTo($request)->findOrFail($id);
 
         if ($transfer->created_by_user_id !== $user->id && ! $user->hasRole('owner')) {
             return response()->json([
@@ -234,5 +241,22 @@ final class TreasuryTransferController extends Controller
                 'journalEntry',
             ])
         ))->response();
+    }
+
+    /**
+     * Company-wide roles act on transfers of any unit; everyone else stays
+     * inside the unit context.
+     *
+     * @return Builder<TreasuryTransfer>
+     */
+    private function visibleTo(Request $request): Builder
+    {
+        $query = TreasuryTransfer::query();
+
+        if ($request->user()?->hasCompanyWideRole()) {
+            $query->withoutGlobalScope(OperatingUnitScope::class);
+        }
+
+        return $query;
     }
 }

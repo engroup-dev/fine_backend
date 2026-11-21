@@ -8,6 +8,7 @@ use App\Enums\TreasuryTransferStatus;
 use App\Exceptions\LedgerRuleException;
 use App\Models\CashAccount;
 use App\Models\Company;
+use App\Models\Scopes\OperatingUnitScope;
 use App\Models\TreasuryTransfer;
 use App\Models\User;
 use App\Support\CompanyClock;
@@ -136,7 +137,7 @@ final class TreasuryTransferService
     public function approve(TreasuryTransfer $transfer, User $user, ?float $fxRate = null, ?string $note = null): TreasuryTransfer
     {
         return DB::transaction(function () use ($transfer, $user, $fxRate, $note): TreasuryTransfer {
-            $locked = TreasuryTransfer::whereKey($transfer->getKey())->lockForUpdate()->firstOrFail();
+            $locked = $this->lockTransfer($transfer);
 
             if ($locked->status !== TreasuryTransferStatus::Draft) {
                 throw new LedgerRuleException("Transfer {$locked->transfer_number} is not pending approval.", 'TRANSFER_NOT_PENDING');
@@ -253,7 +254,7 @@ final class TreasuryTransferService
         }
 
         return DB::transaction(function () use ($transfer, $user, $note): TreasuryTransfer {
-            $locked = TreasuryTransfer::whereKey($transfer->getKey())->lockForUpdate()->firstOrFail();
+            $locked = $this->lockTransfer($transfer);
 
             if ($locked->status !== TreasuryTransferStatus::Draft) {
                 throw new LedgerRuleException("Transfer {$locked->transfer_number} is not pending approval.", 'TRANSFER_NOT_PENDING');
@@ -277,7 +278,7 @@ final class TreasuryTransferService
     public function cancel(TreasuryTransfer $transfer, User $user): TreasuryTransfer
     {
         return DB::transaction(function () use ($transfer, $user): TreasuryTransfer {
-            $locked = TreasuryTransfer::whereKey($transfer->getKey())->lockForUpdate()->firstOrFail();
+            $locked = $this->lockTransfer($transfer);
 
             if ($locked->status !== TreasuryTransferStatus::Draft) {
                 throw new LedgerRuleException("Transfer {$locked->transfer_number} is not pending approval.", 'TRANSFER_NOT_PENDING');
@@ -294,5 +295,18 @@ final class TreasuryTransferService
 
             return $locked;
         });
+    }
+
+    /**
+     * Re-read the transfer the controller already resolved and authorized. A
+     * company-wide approver may act on another unit's transfer, so the unit
+     * scope must not hide it here.
+     */
+    private function lockTransfer(TreasuryTransfer $transfer): TreasuryTransfer
+    {
+        return TreasuryTransfer::withoutGlobalScope(OperatingUnitScope::class)
+            ->whereKey($transfer->getKey())
+            ->lockForUpdate()
+            ->firstOrFail();
     }
 }

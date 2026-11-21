@@ -570,3 +570,47 @@ test('index filters by status, cash_account_id, date range half-open, and search
         ->assertOk()
         ->assertJsonPath('data.transfer_number', 'TRF-2026-00001');
 });
+
+test('a company-wide approver pinned to another unit sees and approves the transfer', function (): void {
+    $otherUnit = OperatingUnit::create([
+        'company_id' => $this->company->id,
+        'blueprint_id' => $this->unit->blueprint_id,
+        'name' => 'Showroom',
+        'code' => 'SHOW-01',
+        'unit_type' => 'retail',
+        'status' => 'active',
+    ]);
+    $from = linkedTreasury($otherUnit, '121103');
+    $to = linkedTreasury($otherUnit, '121104');
+
+    $this->accounting->postJournal('Seed balance', [
+        ['account_code' => '121103', 'debit' => 500.0, 'operating_unit_id' => $otherUnit->id],
+        ['account_code' => '40201', 'credit' => 500.0, 'operating_unit_id' => $otherUnit->id],
+    ]);
+
+    $transferId = $this->actingAs($this->owner)->withHeaders(['X-Operating-Unit-ID' => $otherUnit->id])
+        ->postJson('/api/v1/treasury-transfers', [
+            'from_cash_account_id' => $from->id,
+            'to_cash_account_id' => $to->id,
+            'amount' => 120.0,
+            'operating_unit_id' => $otherUnit->id,
+        ])->assertStatus(201)->json('data.id');
+
+    // The accountant's top bar is pinned to the first unit.
+    $pinned = fn () => $this->actingAs($this->accountant)->withHeaders(['X-Operating-Unit-ID' => $this->unit->id]);
+
+    expect(collect($pinned()->getJson('/api/v1/treasury-transfers')->assertOk()->json('data'))->pluck('id'))
+        ->not->toContain($transferId)
+        ->and(collect($pinned()->getJson('/api/v1/treasury-transfers?company_wide=1')->assertOk()->json('data'))->pluck('id'))
+        ->toContain($transferId);
+
+    $pinned()->getJson("/api/v1/treasury-transfers/{$transferId}")->assertOk();
+    $pinned()->postJson("/api/v1/treasury-transfers/{$transferId}/approve")
+        ->assertOk()
+        ->assertJsonPath('data.status', 'approved');
+
+    // A unit-scoped officer of the first unit still cannot reach it.
+    ($this->actAs)($this->treasuryOfficer2)->getJson("/api/v1/treasury-transfers/{$transferId}")->assertNotFound();
+    expect(collect(($this->actAs)($this->treasuryOfficer2)->getJson('/api/v1/treasury-transfers?company_wide=1')->json('data'))->pluck('id'))
+        ->not->toContain($transferId);
+});
