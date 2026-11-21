@@ -25,6 +25,14 @@ if errorlevel 1 (
     exit /b 1
 )
 
+:: Warn (never auto-migrate) when the database is behind the code: requests that
+:: touch the missing tables or columns fail with "Server error"
+php artisan migrate:status --pending=1 >nul 2>&1
+if errorlevel 1 (
+    >>"%LOG_FILE%" echo [%date% %time%] WARNING: the database has pending migrations. Run update_backend.bat.
+    echo [WARNING] The database has pending migrations. Run update_backend.bat.
+)
+
 :: Check if port is already in use (Get-NetTCPConnection avoids parsing localized netstat output)
 powershell -NoProfile -Command "if (Get-NetTCPConnection -State Listen -LocalPort %FINE_PORT% -ErrorAction SilentlyContinue) { exit 0 } else { exit 1 }"
 if not errorlevel 1 (
