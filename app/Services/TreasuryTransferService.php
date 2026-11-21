@@ -143,7 +143,7 @@ final class TreasuryTransferService
                 throw new LedgerRuleException("Transfer {$locked->transfer_number} is not pending approval.", 'TRANSFER_NOT_PENDING');
             }
 
-            if ($locked->created_by_user_id === $user->id && ! $user->hasRole('owner')) {
+            if ($locked->created_by_user_id === $user->id && ! $user->hasRole('owner') && ! $user->hasRole('admin')) {
                 throw new LedgerRuleException('Transfers cannot be approved by their creator.', 'TRANSFER_SELF_APPROVAL');
             }
 
@@ -284,7 +284,7 @@ final class TreasuryTransferService
                 throw new LedgerRuleException("Transfer {$locked->transfer_number} is not pending approval.", 'TRANSFER_NOT_PENDING');
             }
 
-            if ($locked->created_by_user_id !== $user->id && ! $user->hasRole('owner')) {
+            if ($locked->created_by_user_id !== $user->id && ! $user->hasRole('owner') && ! $user->hasRole('admin')) {
                 throw new LedgerRuleException('Only the transfer creator or the owner can cancel this transfer.', 'TRANSFER_CANCEL_FORBIDDEN');
             }
 

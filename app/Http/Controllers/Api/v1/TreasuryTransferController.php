@@ -98,7 +98,7 @@ final class TreasuryTransferController extends Controller
     {
         $user = $request->user();
 
-        if (! $user->hasRole('owner') && ! $user->hasRole('accounting-manager') && ! $user->hasRole('treasury-officer')) {
+        if (! $user->hasRole('owner') && ! $user->hasRole('admin') && ! $user->hasRole('accounting-manager') && ! $user->hasRole('treasury-officer')) {
             return response()->json([
                 'message' => 'Only an accounting manager, treasury officer, or the owner can create transfers.',
                 'code' => 'TRANSFER_FORBIDDEN',
@@ -223,7 +223,7 @@ final class TreasuryTransferController extends Controller
 
         $transfer = $this->visibleTo($request)->findOrFail($id);
 
-        if ($transfer->created_by_user_id !== $user->id && ! $user->hasRole('owner')) {
+        if ($transfer->created_by_user_id !== $user->id && ! $user->hasRole('owner') && ! $user->hasRole('admin')) {
             return response()->json([
                 'message' => 'Only the transfer creator or the owner can cancel this transfer.',
                 'code' => 'TRANSFER_CANCEL_FORBIDDEN',

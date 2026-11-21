@@ -614,3 +614,26 @@ test('a company-wide approver pinned to another unit sees and approves the trans
     expect(collect(($this->actAs)($this->treasuryOfficer2)->getJson('/api/v1/treasury-transfers?company_wide=1')->json('data'))->pluck('id'))
         ->not->toContain($transferId);
 });
+
+test('the admin role is treated like the owner, as everywhere else in the API', function (): void {
+    $admin = User::factory()->create(['must_change_password' => false]);
+    $role = Role::firstOrCreate(['slug' => 'admin'], ['name' => 'admin']);
+    RolePermissions::grantDefaults($role);
+    UserRole::create(['user_id' => $admin->id, 'role_id' => $role->id, 'operating_unit_id' => null]);
+
+    $this->accounting->postJournal('Seed balance', [
+        ['account_code' => '121101', 'debit' => 500.0, 'operating_unit_id' => $this->unit->id],
+        ['account_code' => '40201', 'credit' => 500.0, 'operating_unit_id' => $this->unit->id],
+    ]);
+
+    $transferId = ($this->actAs)($admin)->postJson('/api/v1/treasury-transfers', [
+        'from_cash_account_id' => $this->treasuryA->id,
+        'to_cash_account_id' => $this->treasuryB->id,
+        'amount' => 40.0,
+        'operating_unit_id' => $this->unit->id,
+    ])->assertStatus(201)->json('data.id');
+
+    ($this->actAs)($admin)->postJson("/api/v1/treasury-transfers/{$transferId}/approve")
+        ->assertOk()
+        ->assertJsonPath('data.status', 'approved');
+});

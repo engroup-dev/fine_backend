@@ -133,7 +133,7 @@ final class BankReconciliationController extends Controller
     {
         $user = $request->user();
 
-        if (! $user || (! $user->hasRole('owner') && ! $user->hasRole('accounting-manager') && ! $user->hasRole('treasury-officer'))) {
+        if (! $user || (! $user->hasRole('owner') && ! $user->hasRole('admin') && ! $user->hasRole('accounting-manager') && ! $user->hasRole('treasury-officer'))) {
             return response()->json([
                 'message' => 'Only an accounting manager, treasury officer, or the owner can perform this action.',
                 'code' => 'RECONCILIATION_FORBIDDEN',
